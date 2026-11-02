@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Same 40, Different Burst — NFL Big Data Bowl 2027</title>
+<meta name="description" content="An exploratory report and all-position comparison of recorded 40-yard speed and observed acceleration profiles.">
+<style>__CSS__</style>
+</head>
+<body>
+<header class="topbar"><a class="brand" href="#top"><span class="brand-mark">40</span><span>FIELD NOTES <small>BIG DATA BOWL 2027</small></span></a><span class="edition">Hunter Clark · Research draft</span></header>
+<main id="top">
+<section class="hero">
+<div class="hero-copy"><p class="eyebrow">COMBINE TRACKING / 2023–2025</p><h1>Same 40.<br><em>Different burst.</em></h1><p class="dek">A stopwatch gives the finish. The recorded profile shows how speed builds along the way.</p><div class="hero-actions"><button id="open-comparison" class="button primary" type="button">Compare players <span aria-hidden="true">↗</span></button><button id="print-report" class="button secondary" type="button">Print report</button></div></div>
+<div class="hero-aside"><p class="small-label">THE RESEARCH QUESTION</p><p class="question">Same position.<br>Same published time.<br>When did the observed<br>acceleration peak?</p><dl class="hero-stats"><div><dt>Players</dt><dd>418</dd></div><div><dt>Recordings</dt><dd>793</dd></div><div><dt>Position groups</dt><dd>5</dd></div></dl></div>
+</section>
+<div class="scope-note"><strong>What this report establishes</strong><span>Observed profile differences and within-position repeatability. All-position NFL linkage is unfinished; the limited WR pilot is reported separately.</span></div>
+<nav class="tabbar" role="tablist" aria-label="Report views"><button id="tab-report" type="button" role="tab" class="tab active" aria-controls="report-panel" aria-selected="true">01 / Research report</button><button id="tab-comparison" type="button" role="tab" class="tab" aria-controls="comparison-panel" aria-selected="false">02 / Player comparison</button><span class="tab-note">Offline · No login · Source-backed results</span></nav>
+<section id="report-panel" role="tabpanel" aria-labelledby="tab-report">
+<div class="report-layout"><aside class="report-nav"><p class="small-label">IN THIS REPORT</p>__TOC__<div class="report-meta"><span>__WORD_COUNT__ words</span><span>5 figures + 1 table</span><span>Built __GENERATED_DATE__</span></div><p class="small muted">Exploratory draft. Physical units and sprint boundaries remain unverified.</p></aside><article id="report-narrative">__REPORT__</article></div>
+</section>
+<section id="comparison-panel" role="tabpanel" aria-labelledby="tab-comparison" hidden>
+<div class="compare-heading"><div><p class="eyebrow">EXPLORE THE RECORDED PROFILES</p><h2>Choose the comparison.</h2></div><p>Start within one Combine position. Match the exact published time, then inspect each available attempt.</p></div>
+<div class="compare-layout">
+<aside class="controls">
+<div class="control-pair"><label>Combine position<select id="position"></select></label><label>Draft year<select id="year"><option value="ALL">All years</option><option>2023</option><option>2024</option><option>2025</option></select></label></div>
+<label class="check-line"><input type="checkbox" id="cross-position"> Enable cross-position comparison</label>
+<label id="cross-groups-wrap" hidden>Position groups<select id="cross-groups" multiple size="5"></select><span class="hint">Command/Ctrl-click to select multiple groups.</span></label>
+<label>Official 40 time<select id="forty"></select></label>
+<div class="field-header"><label for="player-search">Players</label><span id="selected-count"></span></div>
+<input id="player-search" type="search" placeholder="Find a player…" aria-label="Search players in filtered group">
+<div id="player-list" class="choice-list" aria-label="Player choices"></div>
+<details class="attempt-details"><summary>Recorded attempts <span id="attempt-count"></span></summary><div id="attempt-list" class="choice-list compact"></div></details>
+<label>Acceleration smoothing<select id="window"><option value="5">5 frames / 0.4-second span</option><option value="7" selected>7 frames / 0.6-second span</option><option value="9">9 frames / 0.8-second span</option></select></label>
+<label>Plot time zero<select id="reference"><option value="recording">First recorded frame — launch unverified</option><option value="speed3">Observed 3-unit speed crossing — not launch</option></select></label>
+<fieldset><legend>Raw speed bands</legend><div id="band-options" class="band-options"></div></fieldset>
+<p class="hint">Intervals use raw speed. Smoothing changes the acceleration estimates. Unsupported intervals stay unavailable.</p>
+</aside>
+<div class="comparison-content">
+<div id="selection-status" class="selection-status" role="status" aria-live="polite"></div>
+<div id="charts" class="charts"><div class="chart"><div class="chart-header"><h3>Recorded speed</h3><span>raw units</span></div><svg id="speed-chart" role="img" aria-label="Selected players’ recorded speed curves"></svg></div><div class="chart"><div class="chart-header"><h3>Signed acceleration</h3><span>raw speed units / second</span></div><svg id="accel-chart" role="img" aria-label="Selected players’ signed acceleration curves and observed peak markers"></svg></div></div>
+<div id="plot-legend" class="plot-legend"></div>
+<div class="replay"><button id="play" class="button secondary" type="button" aria-label="Play the recorded-time cursor">Play cursor</button><label for="time-scrub">Recorded-time cursor</label><input id="time-scrub" type="range" min="0" max="5" step="0.01" value="0"><output id="time-value" for="time-scrub">0.0 s</output></div>
+<p id="reference-label" class="hint"></p>
+<div class="table-heading"><h3>Observed peak comparison</h3><p>One row per selected recording. Markers show supported-region peaks, not a confirmed sprint-wide maximum.</p></div>
+<div class="table-scroll"><table id="peak-table"><thead></thead><tbody></tbody></table></div>
+<div class="table-heading"><h3>Time through observed speed bands</h3><p>Elapsed seconds between bracketed thresholds, with 0.3 seconds of observed upper-threshold coverage.</p></div>
+<div class="table-scroll"><table id="interval-table"><thead></thead><tbody></tbody></table></div>
+<div class="measurement-note"><strong>Read the reference, not just the number.</strong><p>Recording start is not confirmed physical launch. A speed crossing is an observed reference, not a reconstructed start. Peak timing follows the 0.1-second sampling grid; interpolated crossing times do not establish millisecond physical accuracy. The official 40 is player-level and is not mapped to every recorded attempt.</p></div>
+</div></div>
+</section>
+</main>
+<footer><span>Same 40, Different Burst · Hunter Clark</span><span>Research draft · No all-position NFL performance claim</span><a href="https://www.kaggle.com/competitions/nfl-big-data-bowl-2027">Competition source ↗</a></footer>
+<script id="report-data" type="application/json">__DATA__</script>
+<script>__JS__</script>
+</body>
+</html>

@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "created_utc": "2026-11-02T22:53:16.235155+00:00",
+  "status": "Research draft; all-position NFL linkage and physical-unit checks incomplete",
+  "markdown_word_count": 1426,
+  "figures": 5,
+  "tables": 1,
+  "players": 418,
+  "recordings": 793,
+  "example_selection": "Largest same-year exact-time Combine WR group; ties by year and official time",
+  "source_manifests": {
+    "outputs/prepared_all_positions/manifest.json": "78b45454f99324744072cb67444b4657142824558e3ac79ba6705436461fade8",
+    "outputs/all_position_profiles/manifest.json": "6be299c2bf82475f2b38dccae016f18b4afe45f2777c2072c8c4eb65b4e23434",
+    "outputs/all_position_validation/manifest.json": "5e0b839f5f5b8e4c192259144289060e6f5dc29d4c229e973162b3ae4c6e0c89",
+    "outputs/validation/manifest.json": "2b6f60ade7d53c2262b4311ffb17b11418aef3f65663ce67c35ac6ba7b080079"
+  },
+  "files": {
+    "writeup.md": {
+      "bytes": 10216,
+      "sha256": "087692662f63892f108f22dc8a956e98ec50e67e1d8bc5a029d956ff94561e43"
+    },
+    "index.html": {
+      "bytes": 3075858,
+      "sha256": "bc63e0650832ab6ffecea994b49cc66a767d2454e9b33fee4d4f1e7a84348589"
+    },
+    "figures/01_same_time_profiles.png": {
+      "bytes": 237539,
+      "sha256": "9803fdc154d6fae0eaf5602e2abe699c968e9166958cee5ed5a52d08354be147"
+    },
+    "figures/02_speed_band_coverage.png": {
+      "bytes": 81165,
+      "sha256": "cbb5b7288197ecbe59a4d4a9015e352ff135cae2c0171377e11b0e85eaf89ed8"
+    },
+    "figures/03_peak_repeatability.png": {
+      "bytes": 149830,
+      "sha256": "c27ce2bdf20dca6fd398f26bd84ed9271b2de4c4e3184e035ba0318cf6de16d0"
+    },
+    "figures/04_timing_agreement.png": {
+      "bytes": 74335,
+      "sha256": "590a1b03f63f3f8f0c59e4f4f0dc923e2d8a46a519af25bb1a2cb0879da0f7ad"
+    },
+    "figures/05_wr_pilot_result.png": {
+      "bytes": 53903,
+      "sha256": "7d5ac0ea9f7fbd9519c6c3b02ec3f621bdf87c930fdf3b927461fdbfae78e9e2"
+    }
+  }
+}
