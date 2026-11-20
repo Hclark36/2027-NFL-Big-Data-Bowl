@@ -1,37 +1,27 @@
-# Analysis plan
+# Fresh R analysis plan
 
-## Scope and hypothesis
+The analysis will be rebuilt step by step from raw files. Earlier report findings and selected player examples are not assumed to carry over.
 
-Primary population: WR, contingent on data audit. Primary movement hypothesis: early speed acquisition in the Combine predicts speed acquisition in comparable NFL route releases. Secondary football hypothesis: the profile adds information about separation on comparable routes. Association does not establish causality or a training intervention.
+## 1. Audit the data
 
-## 1. Audit before modeling
+Inspect file inventory, actual columns, candidate keys, missing values, duplicate frames, timestamp spacing, drill labels, attempt identifiers, and player/results overlap. Distinguish full-file statistics from previews. Account for all candidate recordings.
 
-Inventory all downloaded files and schemas; establish player/attempt/play/frame keys, measurement units, sampling frequency, drill labels, and repeated attempts. Count unique players by position, class, NFL exposure, and availability. Check whether the launch and full 40 are actually captured. Inspect sensor speed/acceleration definitions; do not assume acceleration is signed or longitudinal. Compare official 10/40 splits to tracking distance and elapsed time. Check joins for row multiplication and selection into NFL participation. The CSV audit is an inventory, not a full data-quality assessment.
+## 2. Establish measurement definitions
 
-## 2. Prepare the 40
+Verify coordinate and speed units, the meaning of supplied acceleration, recording start/finish coverage, and any mapping between official results and individual attempts. Decide what timing references the data support. Document unresolved questions.
 
-Normalize direction and project displacement onto the sprint axis. Define physical launch independently of official timing; flag left-truncated attempts. Inspect timestamps, gaps, duplicate frames, and finish coverage. Use interpolation only within observed coverage. Compare raw and smoothed curves, and multiple reasonable smoothing windows. Differentiate speed only after resolving units and noise. Retain all attempts to measure within-player repeatability before selecting or averaging attempts; do not choose a different best attempt per feature.
+## 3. Define profiles and test consistency
 
-## 3. Define a small feature set
+Estimate signed changes in speed only after defining the method. Evaluate smoothing and edge sensitivity, retain unsupported intervals as unavailable, and assess agreement between a player's recordings. Separate observed peak acceleration from peak speed.
 
-Primary candidate: time to a common absolute speed threshold chosen using Combine coverage only. Secondary candidates: time to 90% of a robust within-attempt peak speed; speed at fixed early times; sustained maximum positive acceleration and its timing; late-run speed. Relative thresholds depend on each player's maximum, so retain maximum speed alongside them. Assess feature reliability and collinearity. If launch coverage is poor, drop launch-based claims rather than reconstructing unseen acceleration.
+## 4. Compare players
 
-Show matched pairs within position and similar official 40 times (initial exploratory tolerance 0.05 seconds, with sensitivity checks), while preserving the full cohort for modeling. Choose illustrative pairs using Combine profiles alone, before examining NFL outcomes. Do not equate matching on a total time with causal identification.
+Use Combine position groups and primarily same-year comparisons. Define a reproducible rule for similar official times and selecting report examples. Show individual attempts so variation is visible. Do not select examples using NFL outcomes or attractive curves alone.
 
-## 4. Test translation
+## 5. Consider NFL translation
 
-Confirm available events and route labels before defining the outcome. Primary candidate: speed gained over a fixed post-release interval in comparable, non-motion, unimpeded route releases. Separate starting from rest from already moving. Account for press coverage, route type, alignment, and initial speed when available. Secondary candidate: separation at a specified route landmark or event, with defender assignment and coverage context audited. Do not mix separation at throw across arbitrary route depths as if comparable. Define minimum opportunities before outcome inspection; use rates or equal exposure windows, not cumulative career totals.
+Define one football movement outcome and its relevant position group before testing it. Audit player overlap, context, exposure, and event coverage. Compare any added tracking feature against a stated baseline using held-out players. Report a lack of improvement when that is the result.
 
-## 5. Estimate added information
+## 6. Write the report
 
-Baseline: official 40, 10-yard split, size, class, and relevant role/context. Expanded model: same variables plus a small prespecified set of profile features. Draft position is a sensitivity adjustment, not an automatic primary control, since it includes scouting information downstream of athletic evaluation.
-
-Use a simple regularized model initially. All plays and attempts from a player stay in the same fold; fit scaling, imputation, feature selection, and tuning on training folds only. Compare out-of-sample errors on identical held-out players. If sample size supports it, hold out a later draft class. Report player counts, paired model improvement, and player-level bootstrap uncertainty. Thousands of plays do not create thousands of independent Combine observations.
-
-Separate exploratory feature discovery from confirmatory evaluation. Report null findings and sensitivity to alignment, smoothing, threshold, role adjustment, attempt aggregation, and opportunity filters.
-
-## 6. Communicate
-
-Replay: common elapsed-time clock, 0-to-40 lane markers, speed curves, signed acceleration curves, play/pause/scrub, stable colors, attempt labels, and a static export for the writeup. Never align each player's finish to the same clock time; that would hide real differences. Distinguish official timing from tracking elapsed time. No default autoplay. Respect reduced-motion settings in the final dashboard.
-
-Report: keep essential evidence inside the Kaggle writeup and public notebook. Dashboard is a companion until organizer guidance explicitly allows substitution. Recheck rules before submission.
+Lead with a selected-player example, explain measurement choices, show broader evidence and consistency, and close with implications and limits. Use only verified numerical results. Keep detailed implementation in the code and documentation.

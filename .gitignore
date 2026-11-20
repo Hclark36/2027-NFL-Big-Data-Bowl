@@ -1,1 +1,27 @@
+# Local data and generated results
+data/*
+!data/README.md
+outputs/*
+!outputs/README.md
 
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+.kaggle/
+kaggle.json
+
+# R session and local libraries
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+renv/library/
+renv/staging/
+.Renviron
+
+# Historical/local Python environments and editor caches
+.venv/
+__pycache__/
+.ipynb_checkpoints/
+.DS_Store

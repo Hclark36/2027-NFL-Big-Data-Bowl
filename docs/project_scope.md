@@ -1,11 +1,28 @@
-# Core project scope
+# Project scope
 
-Select a Combine position group, published official 40 time, and one or more players. Display recorded speed and signed change in speed, with observed peak magnitude and timing for each available attempt. Include single-recording players and retain quality flags. Cross-position comparison is optional; within-group comparison is the default. The current all-position cohort contains 418 players and 793 recorded attempts. Compare published times at their reported hundredth-second precision.
+## Central question
 
-Combine position defines the athletic-test group; retain NFL position separately. Do not require similar 10-yard splits, two attempts, NFL opportunity, or a selected NFL outcome to appear in the core comparison. Optional draft-year filters and year labels expose possible recording differences.
+How do players with similar published 40-yard dash times differ in observed speed buildup and acceleration profiles?
 
-Time since the first recorded frame and time relative to an observed speed crossing are distinct from physical launch. Observed peaks can miss a higher unobserved peak, and supported-region boundary peaks require review. No physical acceleration units are asserted until documented. Keep 5/7/9-frame method sensitivity available. The per-player official 40 is not mapped to a verified official time for every individual recorded attempt.
+## Population and comparisons
 
-The existing 43-WR NFL route test concerns a mean 3-to-7 speed interval, not peak timing and not all positions. Preserve it as a pilot; its null incremental-prediction result is not a verdict on the core question. Position-specific NFL linkage remains further work and must use suitable outcomes and coverage audits.
+Start by auditing all player 40-yard recordings, not only receivers or players with substantial NFL playing time. Organize comparisons by Combine position. Prefer the same draft year when illustrating similar official times. Cross-position comparisons are secondary.
 
-Keep speed-building intervals alongside peak acceleration in the main notebook. Shared bands are 2–4, 4–6, 6–8, 8–10, plus 3–7 raw speed units. Audit support separately by position before interpreting higher-speed measurements. Raw selected-attempt intervals and smoothed cohort sensitivities have distinct labels. Speed bands are neither distance splits nor automatically identified sprint phases. Missing coverage is not zero elapsed time. Report repeatability within position groups to avoid inflated pooled correlations.
+Retain each available recording. Two recordings are needed for repeated-attempt analysis but are not a blanket requirement for descriptive inclusion.
+
+## Measurements to establish
+
+- Recorded speed curves.
+- Observed peak acceleration magnitude and timing.
+- Elapsed time between supported speed thresholds.
+- Coverage, sensitivity, and repeated-attempt agreement.
+
+Definitions will be settled from the fresh data audit. Physical launch timing, physical units, and complete 40-yard coverage are not assumed.
+
+## Football relevance
+
+NFL movement translation is a separate question. Its population may be narrower because of role, tracking availability, and opportunities. A receiver-only result must not be generalized to other positions or overall NFL value.
+
+## Deliverables and status
+
+The intended deliverables are an R analysis, selected report figures, and a written Kaggle report. This reset repository currently holds documentation only. New analysis code and findings will be added as the rebuild progresses; the previous Python code and HTML report remain in Git history.

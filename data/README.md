@@ -1,17 +1,11 @@
-# Data and replay contract
+# Competition data
 
-Do not commit competition files or credentials. The snippet supplied in chat downloads data; it does not expose file contents to this project.
+Obtain the authorized NFL Big Data Bowl 2027 files from Kaggle. Keep the raw CSVs in a local data folder; they are not distributed in this repository.
 
-After the audit, implement a documented raw-to-normalized adapter. The replay exporter expects a CSV with:
+The fresh audit will inspect the actual schemas before defining inputs. It will begin with player identities, Combine results, and Combine tracking. NFL tracking and play context will be examined separately if the translation question proceeds.
 
-| Column | Meaning |
-|---|---|
-| player_id | Stable identifier, read as string |
-| player_name | Display name |
-| attempt_id | Distinguishes repeated attempts |
-| time_s | Seconds from the audited physical start, not simply the first recorded frame |
-| distance_yd | Forward distance from that start, 0 through 40 yards |
-| speed_yd_s | Validated forward speed in yards/second |
-| acceleration_yd_s2 | Signed change in forward speed, yards/second squared |
+Record file names, sizes, download/version information when available, and the scope of each audit. Label sample previews separately from full-file checks.
 
-One row per player/attempt/time; no duplicated times. Speed and acceleration must be finite, with nonnegative speed. Describe start detection, smoothing, units, missing frames, finish interpolation, and exclusions in the preparation notebook. Do not silently fill a missing launch or finish. Preserve attempt-level rows until reliability is assessed. Run replay with up to four player_id:attempt_id selections; all curves share elapsed seconds. The exporter rejects incomplete 0-to-40 attempts. Use official 40 times separately; sensor elapsed times need not match official timing.
+Do not infer physical units from column names. Verify the definitions of coordinates, supplied speed, supplied acceleration, timestamps, drill labels, and attempts. Recording start/finish must not automatically be treated as physical sprint start/finish.
+
+Keep raw data unchanged. Never commit API tokens, Kaggle credentials, or private local configuration. The root .gitignore excludes local files in this folder except this README.
