@@ -1,4 +1,4 @@
-Same forty, Different Gears
+Same Forty, Different Gears
 
 NFL Big Data Bowl 2027 research scaffold. No competition data has been downloaded or analyzed yet; no results are claimed.
 
