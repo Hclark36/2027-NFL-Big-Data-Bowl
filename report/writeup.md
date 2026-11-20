@@ -1,4 +1,4 @@
-# Same 40, Different Burst
+# Forty Yards, Different Gears 
 
 *Observed acceleration profiles across Combine position groups — research draft*
 
