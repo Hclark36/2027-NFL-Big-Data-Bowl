@@ -4,6 +4,7 @@ data/*
 outputs/*
 !outputs/README.md
 
+HEAD
 # Credentials and local configuration
 .env
 .env.*
@@ -25,3 +26,6 @@ renv/staging/
 __pycache__/
 .ipynb_checkpoints/
 .DS_Store
+
+.Rproj.user
+ 01642a2 (Update R analysis, figures, and report)

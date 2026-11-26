@@ -1,0 +1,5 @@
+column,frames,missing_raw_values,unparseable_values,infinite_values,negative_values,minimum_finite_value,maximum_finite_value
+x,41500,0,0,0,0,9.066666667,52.8
+y,41500,0,0,0,41285,-2.246992588,2.7
+s,41500,0,0,0,0,0.193333333,11.85423152
+a,41500,0,0,0,0,0.003333333,9.779180834

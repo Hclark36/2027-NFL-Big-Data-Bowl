@@ -1,0 +1,940 @@
+---
+title: "03 - Profile Consistency"
+author: "Hunter Clark"
+output: html_document
+---
+
+This notebook evaluates agreement between a player's recorded attempts within Combine position groups.
+
+## Setup
+
+```{r setup, message = FALSE}
+library(dplyr)
+
+ROOT <- normalizePath(getwd())
+
+while (!(dir.exists(file.path(ROOT, "analysis_r")) &&
+         dir.exists(file.path(ROOT, "data")))) {
+
+  parent <- dirname(ROOT)
+
+  if (parent == ROOT) {
+    stop("Open the project folder first.")
+  }
+
+  ROOT <- parent
+}
+
+knitr::opts_knit$set(root.dir = ROOT)
+```
+
+## Load the measurement handoff
+
+```{r load-measurements}
+handoff_path <- file.path(
+  ROOT,
+  "outputs",
+  "r_restart",
+  "02_measurements",
+  "measurement_handoff.rds"
+)
+
+if (!file.exists(handoff_path)) {
+  stop("Complete and save 02_measurement_definitions.Rmd first.")
+}
+
+measurements <- readRDS(handoff_path)
+
+working_peaks <- measurements$working_peaks
+player_roster <- measurements$player_roster
+attempt_keys <- measurements$attempt_keys
+
+measurements$decisions
+```
+
+## Attach player metadata
+
+```{r attach-player-metadata}
+if (anyDuplicated(
+  player_roster[, c("draft_year", "nfl_id")]
+) > 0L) {
+  stop("Player-year metadata keys are not unique.")
+}
+
+if (anyDuplicated(
+  working_peaks[, attempt_keys]
+) > 0L) {
+  stop("Working peaks contain duplicate recording keys.")
+}
+
+named_peaks <- working_peaks |>
+  left_join(
+    player_roster |>
+      select(
+        draft_year,
+        nfl_id,
+        display_name,
+        combine_position
+      ),
+    by = c("draft_year", "nfl_id"),
+    relationship = "many-to-one"
+  )
+
+if (anyNA(named_peaks$display_name) ||
+    anyNA(named_peaks$combine_position)) {
+  stop("Some recordings are missing player metadata.")
+}
+
+if (any(!is.finite(
+  named_peaks$peak_acceleration_raw_per_s
+)) ||
+    any(!is.finite(
+      named_peaks$peak_time_from_recording_start_s
+    ))) {
+  stop("Review missing or nonfinite peak measurements.")
+}
+```
+
+## Identify players with two recordings
+
+```{r paired-player-coverage}
+recording_counts <- named_peaks |>
+  count(
+    draft_year,
+    nfl_id,
+    name = "recording_count"
+  )
+
+pairing_coverage <- recording_counts |>
+  count(
+    recording_count,
+    name = "player_years"
+  )
+
+pairing_coverage
+```
+
+## Build repeated-recording pairs
+
+```{r build-recording-pairs}
+paired_peaks <- named_peaks |>
+  group_by(draft_year, nfl_id) |>
+  filter(n() == 2L) |>
+  arrange(
+    as.numeric(attempt),
+    event_id,
+    .by_group = TRUE
+  ) |>
+  summarise(
+    display_name = first(display_name),
+    combine_position = first(combine_position),
+
+    attempt_a = first(attempt),
+    attempt_b = last(attempt),
+
+    peak_a = first(peak_acceleration_raw_per_s),
+    peak_b = last(peak_acceleration_raw_per_s),
+
+    peak_time_a_s = first(
+      peak_time_from_recording_start_s
+    ),
+    peak_time_b_s = last(
+      peak_time_from_recording_start_s
+    ),
+
+    both_peaks_interior = !any(
+      peak_at_search_boundary
+    ),
+
+    .groups = "drop"
+  ) |>
+  mutate(
+    peak_difference_b_minus_a = peak_b - peak_a,
+    absolute_peak_difference = abs(peak_b - peak_a),
+    peak_time_difference_b_minus_a_s =
+      peak_time_b_s - peak_time_a_s,
+    absolute_peak_time_difference_s = abs(
+      peak_time_b_s - peak_time_a_s
+    )
+  )
+
+paired_peaks |>
+  count(
+    combine_position,
+    name = "paired_players"
+  )
+```
+
+Pairs are ordered by attempt label, with event ID breaking ties. A and B do not certify chronological order or identify which recording produced the published official time.
+
+Single-recording players remain in the broader dataset but cannot contribute a repeated-recording pair.
+
+## Agreement within position groups
+
+```{r correlation-helper}
+safe_correlation <- function(x, y, method) {
+
+  valid <- is.finite(x) & is.finite(y)
+
+  x <- x[valid]
+  y <- y[valid]
+
+  if (length(x) < 3L ||
+      sd(x) == 0 ||
+      sd(y) == 0) {
+    return(NA_real_)
+  }
+
+  cor(x, y, method = method)
+}
+```
+
+```{r agreement-by-position}
+agreement_by_position <- paired_peaks |>
+  group_by(combine_position) |>
+  summarise(
+    paired_players = n(),
+
+    pearson_peak_correlation = safe_correlation(
+      peak_a,
+      peak_b,
+      method = "pearson"
+    ),
+
+    spearman_peak_correlation = safe_correlation(
+      peak_a,
+      peak_b,
+      method = "spearman"
+    ),
+
+    mean_peak_difference_b_minus_a = mean(
+      peak_difference_b_minus_a
+    ),
+
+    median_absolute_peak_difference = median(
+      absolute_peak_difference
+    ),
+
+    median_absolute_peak_time_difference_s = median(
+      absolute_peak_time_difference_s
+    ),
+
+    pairs_with_boundary_peak = sum(
+      !both_peaks_interior
+    ),
+
+    .groups = "drop"
+  )
+
+print(agreement_by_position, width = Inf)
+```
+
+Agreement reflects execution and measurement variation together. Peak timing remains relative to recording start, not verified physical launch. These comparisons do not establish predictive value for NFL performance.
+
+## Visualize repeated-recording agreement
+
+```{r plot-paired-peaks, message=FALSE, fig.width=10, fig.height=7}
+library(ggplot2)
+
+ggplot(
+  paired_peaks,
+  aes(
+    x = peak_a,
+    y = peak_b
+  )
+) +
+  geom_abline(
+    intercept = 0,
+    slope = 1,
+    linetype = "dashed",
+    colour = "gray50"
+  ) +
+  geom_point(
+    aes(shape = both_peaks_interior),
+    colour = "#007C91",
+    size = 2,
+    alpha = 0.75
+  ) +
+  facet_wrap(
+    ~ combine_position,
+    ncol = 3
+  ) +
+  coord_equal() +
+  scale_shape_manual(
+    values = c(
+      "TRUE" = 16,
+      "FALSE" = 4
+    ),
+    breaks = c(TRUE, FALSE),
+    labels = c(
+      "Both peaks interior",
+      "At least one boundary peak"
+    )
+  ) +
+  labs(
+    title = "Observed peak acceleration across two recordings",
+    subtitle = "One point per player; seven-frame estimates",
+    x = "Recording A peak (raw speed units / s)",
+    y = "Recording B peak (raw speed units / s)",
+    shape = NULL,
+    caption = "Dashed line indicates equal estimates. A/B are ordered by attempt label."
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  )
+```
+
+## Inspect the largest WR disagreements
+
+```{r largest-wr-disagreements}
+largest_wr_disagreements <- paired_peaks |>
+  filter(combine_position == "WR") |>
+  arrange(desc(absolute_peak_difference)) |>
+  select(
+    display_name,
+    draft_year,
+    attempt_a,
+    attempt_b,
+    peak_a,
+    peak_b,
+    absolute_peak_difference,
+    peak_time_a_s,
+    peak_time_b_s,
+    both_peaks_interior
+  ) |>
+  slice_head(n = 10)
+
+print(largest_wr_disagreements, width = Inf)
+```
+
+## Boundary sensitivity
+
+```{r interior-peak-agreement}
+interior_agreement <- paired_peaks |>
+  filter(both_peaks_interior) |>
+  group_by(combine_position) |>
+  summarise(
+    paired_players = n(),
+    pearson_peak_correlation = safe_correlation(
+      peak_a,
+      peak_b,
+      method = "pearson"
+    ),
+    spearman_peak_correlation = safe_correlation(
+      peak_a,
+      peak_b,
+      method = "spearman"
+    ),
+    median_absolute_peak_difference = median(
+      absolute_peak_difference
+    ),
+    median_absolute_peak_time_difference_s = median(
+      absolute_peak_time_difference_s
+    ),
+    .groups = "drop"
+  )
+
+print(interior_agreement, width = Inf)
+```
+
+## Inspect the largest WR disagreement
+
+```{r select-discrepancy-review}
+review_player <- paired_peaks |>
+  filter(combine_position == "WR") |>
+  arrange(
+    desc(absolute_peak_difference),
+    draft_year,
+    nfl_id
+  ) |>
+  slice_head(n = 1)
+
+review_player |>
+  select(
+    display_name,
+    draft_year,
+    attempt_a,
+    attempt_b,
+    peak_a,
+    peak_b,
+    peak_time_a_s,
+    peak_time_b_s
+  )
+
+review_frames <- measurements$forties |>
+  semi_join(
+    review_player,
+    by = c("draft_year", "nfl_id")
+  ) |>
+  group_by(across(all_of(attempt_keys))) |>
+  arrange(timestamp, .by_group = TRUE) |>
+  mutate(
+    recording_time_s = round(
+      as.numeric(
+        difftime(
+          timestamp,
+          first(timestamp),
+          units = "secs"
+        )
+      ),
+      digits = 6
+    )
+  ) |>
+  ungroup()
+```
+
+```{r plot-discrepancy-speed, fig.width=9, fig.height=5}
+ggplot(
+  review_frames,
+  aes(
+    x = recording_time_s,
+    y = s,
+    colour = factor(attempt),
+    group = event_id
+  )
+) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 1, alpha = 0.6) +
+  labs(
+    title = paste(
+      review_player$display_name[1],
+      "- recorded speed across attempts"
+    ),
+    x = "Seconds since first recorded frame",
+    y = "Supplied speed (raw units)",
+    colour = "Attempt",
+    caption = "Original supplied speed; no additional smoothing or launch alignment."
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  )
+```
+
+## Position-based internal consistency check
+
+```{r position-speed-check}
+review_intervals <- review_frames |>
+  group_by(across(all_of(attempt_keys))) |>
+  group_modify(function(.x, .y) {
+    
+    data <- .x |>
+      arrange(recording_time_s)
+
+    time_s <- data$recording_time_s
+    dt <- diff(time_s)
+
+    if (any(!is.finite(dt)) || any(dt <= 0)) {
+      stop("Invalid time intervals in review recordings.")
+    }
+    
+    step_distance <- sqrt(
+      diff(data$x)^2 +
+      diff(data$y)^2
+    )
+
+    supplied_interval_speed <- (
+      head(data$s, -1) +
+        tail(data$s, -1)
+    ) / 2
+
+    tibble(
+      interval_time_s = (
+        head(time_s, -1) +
+          tail(time_s, -1)
+      ) / 2,
+      interval_duration_s = dt,
+      position_step_raw = step_distance,
+      position_speed_raw = step_distance / dt,
+      supplied_interval_speed_raw = supplied_interval_speed
+    )
+  }) |>
+  ungroup()
+```
+
+```{r summarize-position-speed-check}
+position_speed_summary <- review_intervals |>
+  group_by(across(all_of(attempt_keys))) |>
+  summarise(
+    intervals = n(),
+
+    speed_correlation = safe_correlation(
+      position_speed_raw,
+      supplied_interval_speed_raw,
+      method = "pearson"
+    ),
+
+    median_position_to_supplied_ratio = median(
+      position_speed_raw[
+        supplied_interval_speed_raw > 2
+      ] /
+        supplied_interval_speed_raw[
+          supplied_interval_speed_raw > 2
+        ]
+    ),
+
+    position_path_raw = sum(
+      position_step_raw
+    ),
+
+    integrated_supplied_speed_raw = sum(
+      supplied_interval_speed_raw *
+        interval_duration_s
+    ),
+
+    .groups = "drop"
+  )
+
+print(position_speed_summary, width = Inf)
+```
+
+```{r plot-position-speed-check, fig.width=9, fig.height=7}
+position_speed_plot_data <- bind_rows(
+  review_intervals |>
+    transmute(
+      attempt,
+      event_id,
+      interval_time_s,
+      value = position_speed_raw,
+      source = "Position-derived speed"
+    ),
+
+  review_intervals |>
+    transmute(
+      attempt,
+      event_id,
+      interval_time_s,
+      value = supplied_interval_speed_raw,
+      source = "Supplied speed: endpoint mean"
+    )
+)
+
+ggplot(
+  position_speed_plot_data,
+  aes(
+    x = interval_time_s,
+    y = value,
+    colour = source,
+    group = interaction(event_id, source)
+  )
+) +
+  geom_line(linewidth = 0.9) +
+  facet_wrap(
+    ~ attempt,
+    ncol = 1,
+    labeller = label_both
+  ) +
+  scale_colour_manual(
+    values = c(
+      "Position-derived speed" = "#007C91",
+      "Supplied speed: endpoint mean" = "#D55E00"
+    )
+  ) +
+  labs(
+    title = paste(
+      review_player$display_name[1],
+      "- speed versus recorded position changes"
+    ),
+    x = "Seconds since first recorded frame",
+    y = "Speed values on raw scales",
+    colour = NULL,
+    caption = "Internal consistency check; physical units and launch remain unverified."
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  )
+```
+
+Jacob Cowing’s two recordings show substantially different speed buildup. Within each recording, supplied speed agrees closely with position-derived interval speed. Both recordings are retained; the cause of the between-recording difference remains unresolved.
+
+## Observed speed-building intervals
+
+```{r speed-building-intervals}
+measure_speed_interval <- function(
+    data,
+    lower = 3,
+    upper = 7,
+    hold_s = 0.3) {
+
+  data <- data |>
+    arrange(timestamp)
+
+  time_s <- round(
+    as.numeric(
+      difftime(
+        data$timestamp,
+        first(data$timestamp),
+        units = "secs"
+      )
+    ),
+    digits = 6
+  )
+
+  speed <- data$s
+
+  unavailable <- function(reason) {
+    tibble(
+      status = reason,
+      lower_speed_raw = lower,
+      upper_speed_raw = upper,
+      lower_crossing_s = NA_real_,
+      upper_crossing_s = NA_real_,
+      interval_s = NA_real_
+    )
+  }
+
+  if (lower >= upper || hold_s <= 0) {
+    stop("Invalid speed thresholds or hold duration.")
+  }
+
+  if (length(speed) < 2L ||
+      any(!is.finite(speed)) ||
+      any(!is.finite(time_s)) ||
+      any(diff(time_s) <= 0)) {
+    return(unavailable("Invalid or insufficient observations"))
+  }
+
+  upper_candidates <- which(
+    head(speed, -1) < upper &
+      tail(speed, -1) >= upper
+  ) + 1L
+
+  upper_index <- NA_integer_
+
+  for (i in upper_candidates) {
+
+    hold_end <- which(
+      time_s >= time_s[i] + hold_s - 1e-8
+    )[1]
+
+    if (!is.na(hold_end) &&
+        all(speed[i:hold_end] >= upper)) {
+      upper_index <- i
+      break
+    }
+  }
+
+  if (is.na(upper_index)) {
+    return(unavailable("No sustained bracketed upper crossing"))
+  }
+
+  lower_candidates <- which(
+    head(speed, -1) <= lower &
+      tail(speed, -1) > lower
+  ) + 1L
+
+  lower_candidates <- lower_candidates[
+    lower_candidates <= upper_index
+  ]
+
+  if (length(lower_candidates) == 0L) {
+    return(unavailable("No bracketed lower crossing"))
+  }
+
+  lower_index <- tail(lower_candidates, 1)
+
+  if (any(speed[lower_index:upper_index] < lower)) {
+    return(unavailable("Speed fell below lower threshold"))
+  }
+
+  crossing_time <- function(i, threshold) {
+    time_s[i - 1L] +
+      (threshold - speed[i - 1L]) /
+      (speed[i] - speed[i - 1L]) *
+      (time_s[i] - time_s[i - 1L])
+  }
+
+  lower_time <- crossing_time(lower_index, lower)
+  upper_time <- crossing_time(upper_index, upper)
+
+  tibble(
+    status = "Measured",
+    lower_speed_raw = lower,
+    upper_speed_raw = upper,
+    lower_crossing_s = lower_time,
+    upper_crossing_s = upper_time,
+    interval_s = upper_time - lower_time
+  )
+}
+```
+
+```{r measure-speed-intervals}
+speed_intervals <- measurements$forties |>
+  group_by(across(all_of(attempt_keys))) |>
+  group_modify(
+    ~ measure_speed_interval(
+      .x,
+      lower = 3,
+      upper = 7,
+      hold_s = 0.3
+    )
+  ) |>
+  ungroup()
+
+interval_status <- speed_intervals |>
+  count(
+    status,
+    name = "recordings"
+  )
+
+interval_status
+```
+
+```{r speed-interval-coverage}
+named_intervals <- speed_intervals |>
+  left_join(
+    player_roster |>
+      select(
+        draft_year,
+        nfl_id,
+        display_name,
+        combine_position
+      ),
+    by = c("draft_year", "nfl_id"),
+    relationship = "many-to-one"
+  )
+
+interval_coverage <- named_intervals |>
+  group_by(combine_position) |>
+  summarise(
+    total_recordings = n(),
+    measured_recordings = sum(status == "Measured"),
+    unavailable_recordings = sum(status != "Measured"),
+    .groups = "drop"
+  )
+
+interval_coverage
+```
+
+## Inspect unavailable intervals
+
+```{r unavailable-intervals}
+named_intervals |>
+  filter(status != "Measured") |>
+  select(
+    display_name,
+    draft_year,
+    combine_position,
+    attempt,
+    status
+  )
+```
+
+## Build paired speed intervals
+
+```{r pair-speed-intervals}
+paired_intervals <- named_intervals |>
+  group_by(draft_year, nfl_id) |>
+  filter(
+    n() == 2L,
+    all(status == "Measured")
+  ) |>
+  arrange(
+    as.numeric(attempt),
+    event_id,
+    .by_group = TRUE
+  ) |>
+  summarise(
+    display_name = first(display_name),
+    combine_position = first(combine_position),
+
+    attempt_a = first(attempt),
+    attempt_b = last(attempt),
+
+    interval_a_s = first(interval_s),
+    interval_b_s = last(interval_s),
+
+    .groups = "drop"
+  ) |>
+  mutate(
+    interval_difference_b_minus_a_s =
+      interval_b_s - interval_a_s,
+
+    absolute_interval_difference_s = abs(
+      interval_b_s - interval_a_s
+    ),
+
+    mean_pair_interval_s = (
+      interval_a_s + interval_b_s
+    ) / 2
+  )
+
+paired_intervals |>
+  count(
+    combine_position,
+    name = "paired_players"
+  )
+```
+
+## Speed-interval agreement within position
+
+```{r interval-agreement}
+interval_agreement <- paired_intervals |>
+  group_by(combine_position) |>
+  summarise(
+    paired_players = n(),
+    
+    pearson_interval_correlation = safe_correlation(
+      interval_a_s,
+      interval_b_s,
+      method = "pearson"
+    ),
+    
+    spearman_interval_correlation = safe_correlation(
+      interval_a_s,
+      interval_b_s,
+      method = "spearman"
+    ),
+    
+    mean_difference_b_minus_a_s = mean(
+      interval_difference_b_minus_a_s
+    ),
+
+    median_pair_mean_interval_s = median(
+      mean_pair_interval_s
+    ),
+
+    median_absolute_difference_s = median(
+      absolute_interval_difference_s
+    ),
+
+    p90_absolute_difference_s = quantile(
+      absolute_interval_difference_s,
+      probs = 0.90,
+      names = FALSE
+    ),
+
+    .groups = "drop"
+  )
+
+print(interval_agreement, width = Inf)
+```
+
+## Speed-interval agreement within draft year
+
+```{r interval-by-draft-year}
+interval_agreement_by_year <- paired_intervals |>
+  group_by(combine_position, draft_year) |>
+  summarise(
+    paired_players = n(),
+
+    median_pair_mean_interval_s = median(
+      mean_pair_interval_s
+    ),
+
+    pearson_correlation = safe_correlation(
+      interval_a_s,
+      interval_b_s,
+      method = "pearson"
+    ),
+
+    spearman_correlation = safe_correlation(
+      interval_a_s,
+      interval_b_s,
+      method = "spearman"
+    ),
+
+    median_absolute_difference_s = median(
+      absolute_interval_difference_s
+    ),
+
+    .groups = "drop"
+  ) |>
+  arrange(combine_position, draft_year)
+
+print(interval_agreement_by_year, n = Inf, width = Inf)
+```
+
+## Consistency findings
+
+Repeated-recording agreement varies by position, measurement, and draft year. The 3-7 speed interval shows stronger pooled associations than observed peak magnitude in the current summaries, but neither measurement is uniformly consistent across groups.
+
+Within-year results remain comparatively strong for defensive and offensive linemen. Receiver agreement varies, while tight-end estimates are based on smaller samples.
+
+Median intervals differ across years. Selected-player comparisons will thus primarily remain within Combine positions and draft years. Individual recordings will stay visible instead of being replaced by a single player average.
+
+These results describe agreement in recorded measurements. They do not establish physical measurement accuracy, explain differences between years, or demonstrate NFL predictive value.
+
+## Save profile consistency outputs
+
+```{r save-profile-consistency}
+CONSISTENCY_DIR <- file.path(
+  ROOT,
+  "outputs",
+  "r_restart",
+  "03_consistency"
+)
+
+dir.create(
+  CONSISTENCY_DIR,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+consistency_tables <- list(
+  peak_agreement_by_position = agreement_by_position,
+  interior_peak_agreement = interior_agreement,
+  paired_peaks = paired_peaks,
+  interval_coverage = interval_coverage,
+  interval_agreement = interval_agreement,
+  interval_agreement_by_year = interval_agreement_by_year,
+  paired_intervals = paired_intervals
+)
+
+for (table_name in names(consistency_tables)) {
+  readr::write_csv(
+    consistency_tables[[table_name]],
+    file.path(
+      CONSISTENCY_DIR,
+      paste0(table_name, ".csv")
+    )
+  )
+}
+
+profile_handoff <- list(
+  forties = measurements$forties,
+  player_roster = player_roster,
+  attempt_keys = attempt_keys,
+  named_peaks = named_peaks,
+  all_peak_estimates = measurements$all_peak_estimates,
+  named_intervals = named_intervals,
+  paired_peaks = paired_peaks,
+  paired_intervals = paired_intervals,
+  consistency_tables = consistency_tables,
+  peak_decisions = measurements$decisions,
+  interval_definition = list(
+    lower_speed_raw = 3,
+    upper_speed_raw = 7,
+    upper_hold_s = 0.3,
+    speed_source = "Supplied speed without additional smoothing",
+    crossing_rule = paste(
+      "First sustained bracketed upper crossing;",
+      "latest preceding lower crossing;",
+      "no intervening speed below the lower threshold"
+    )
+  )
+)
+
+saveRDS(
+  profile_handoff,
+  file.path(
+    CONSISTENCY_DIR,
+    "profile_handoff.rds"
+  )
+)
+
+writeLines(
+  capture.output(sessionInfo()),
+  file.path(CONSISTENCY_DIR, "session_info.txt")
+)
+
+cat("Consistency results saved to:", CONSISTENCY_DIR, "\n")
+```
+
+
+

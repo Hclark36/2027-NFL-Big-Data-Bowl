@@ -1,0 +1,1030 @@
+---
+title: "02  Measurment Definitions"
+author: "Hunter Clark"
+output: html_document
+---
+
+This notebook investigates measurement definitions and recording coverage before deriving acceleration profiles.
+
+## Setup
+
+```{r setup, message = FALSE}
+library(dplyr)
+
+ROOT <- normalizePath(getwd())
+
+while (!(dir.exists(file.path(ROOT, "analysis_r")) &&
+         dir.exists(file.path(ROOT, "data")))) {
+
+  parent <- dirname(ROOT)
+
+  if (parent == ROOT) {
+    stop("Open the nfl-big-data-bowl-2027 project folder first.")
+  }
+
+  ROOT <- parent
+}
+
+knitr::opts_knit$set(root.dir = ROOT)
+```
+
+## Loading audited data
+
+```{r load-handoff}
+handoff_path <- file.path(
+  ROOT,
+  "outputs",
+  "r_restart",
+  "01_audit",
+  "audit_handoff.rds"
+)
+
+if (!file.exists(handoff_path)) {
+  stop("Run the save-audit chunk in 01_data_audit.Rmd first.")
+}
+
+handoff <- readRDS(handoff_path)
+
+forties <- handoff$forties
+player_roster <- handoff$player_roster
+attempt_keys <- handoff$attempt_keys
+
+tibble(
+  tracking_frames = nrow(forties),
+  player_years = nrow(player_roster)
+)
+```
+
+## Convert tracking measurements
+
+```{r pressure, echo=FALSE}
+forties <- forties |>
+  mutate(
+    across(
+      all_of(c("x", "y", "s", "a")),
+      as.numeric
+    )
+  )
+
+measurement_values <- as.matrix(
+  forties[, c("x", "y", "s", "a")]
+)
+
+if (any(!is.finite(measurement_values))) {
+  stop("Nonfinite measurements found. Review the data audit.")
+}
+
+if (any(is.na(forties$timestamp))) {
+  stop("Missing timestamps found. Review the data audit.")
+}
+```
+
+## Inspect recording boundaries
+
+```{r recording-boundaries}
+recording_boundaries <- forties |>
+  group_by(across(all_of(attempt_keys))) |>
+  arrange(timestamp, .by_group = TRUE) |>
+  summarise(
+    frames = n(),
+    observed_duration_s = as.numeric(
+      difftime(
+        last(timestamp),
+        first(timestamp),
+        units = "secs"
+      )
+    ),
+    first_speed_raw = first(s),
+    last_speed_raw = last(s),
+    minimum_speed_raw = min(s),
+    maximum_speed_raw = max(s),
+    .groups = "drop"
+  )
+
+boundary_summary <- recording_boundaries |>
+  summarise(
+    recordings = n(),
+    recordings_starting_above_zero = sum(first_speed_raw > 0),
+    median_first_speed_raw = median(first_speed_raw),
+    median_last_speed_raw = median(last_speed_raw),
+    shortest_recording_s = min(observed_duration_s),
+    longest_recording_s = max(observed_duration_s)
+  )
+
+print(boundary_summary, width = Inf)
+```
+
+```{r longest-recording-details}
+recording_boundaries |>
+  left_join(
+    player_roster |>
+      select(
+        draft_year,
+        nfl_id,
+        display_name,
+        combine_position
+      ),
+    by = c("draft_year", "nfl_id"),
+    relationship = "many-to-one"
+  ) |>
+  arrange(desc(observed_duration_s)) |>
+  select(
+    display_name,
+    combine_position,
+    draft_year,
+    attempt,
+    observed_duration_s,
+    first_speed_raw,
+    last_speed_raw,
+    minimum_speed_raw,
+    maximum_speed_raw
+  ) |>
+  head(10)
+```
+
+## Inspecting the longest recording
+
+```{r longest-recording}
+longest_recording <- recording_boundaries |>
+  arrange(
+    desc(observed_duration_s),
+    draft_year,
+    event_id,
+    nfl_id,
+    attempt
+  ) |>
+  slice_head(n = 1)
+
+longest_frames <- forties |>
+  semi_join(
+    longest_recording,
+    by = attempt_keys
+  ) |>
+  arrange(timestamp) |>
+  mutate(
+    recording_time_s = as.numeric(
+      difftime(
+        timestamp,
+        first(timestamp),
+        units = "secs"
+      )
+    )
+  )
+
+longest_player <- player_roster |>
+  semi_join(
+    longest_recording,
+    by = c("draft_year", "nfl_id")
+  )
+
+longest_player |>
+  select(
+    display_name,
+    combine_position,
+    draft_year,
+    recordings
+  )
+
+longest_recording
+```
+
+```{r plot-longest-recording}
+plot(
+  x = longest_frames$recording_time_s,
+  y = longest_frames$s,
+  type = "o",
+  pch = 16,
+  cex = 0.5,
+  col = "#007C91",
+  xlab = "Seconds since first recorded frame",
+  ylab = "Supplied speed (raw units)",
+  main = paste(
+    longest_player$display_name[1],
+    "- attempt",
+    longest_recording$attempt[1]
+  )
+)
+
+grid()
+```
+
+## Position change during the longest recording
+
+```{r longest-recording-displacement}
+longest_frames <- longest_frames |>
+  arrange(timestamp) |>
+  mutate(
+    displacement_from_first_frame = sqrt(
+      (x - first(x))^2 +
+      (y - first(y))^2
+    )
+  )
+
+plot(
+  x = longest_frames$recording_time_s,
+  y = longest_frames$displacement_from_first_frame,
+  type = "o",
+  pch = 16,
+  cex = 0.5,
+  col = "#D55E00",
+  xlab = "Seconds since first recorded frame",
+  ylab = "Displacement from first location (raw coordinate units)",
+  main = paste(
+    longest_player$display_name[1],
+    "- recorded displacement"
+  )
+)
+
+grid()
+```
+
+Jay Ward’s longest recording contains initial movement, a low-speed period, and a later sustained speed increase. The coordinate and speed patterns suggest activity before the main sprint. The recording is retained for further analysis, with physical launch unresolved.
+
+## Check the supplied acceleration definition
+
+```{r calculate-speed-change}
+calculate_speed_change <- function(data) {
+  data <- data |>
+    arrange(timestamp)
+  
+  time_s <- round(
+    as.numeric(
+      difftime(
+        data$timestamp,
+        first(data$timestamp),
+        units = "secs"
+      )
+    ),
+    digits = 6
+  )
+  
+  n_frames <- nrow(data)
+
+  if (n_frames < 3L) {
+    stop("At least three frames are required for this diagnostic.")
+  }
+  
+  if (any(!is.finite(time_s)) ||
+      any(!is.finite(data$s)) ||
+      any(!is.finite(data$a))) {
+    stop("Invalid time, speed, or supplied acceleration values.")
+  }
+  
+  if (any(diff(time_s) <= 0)) {
+    stop("Timestamps must increase within each recording.")
+  }
+  
+  interior <- seq.int(2L, n_frames - 1L)
+  signed_speed_change <- rep(NA_real_, n_frames)
+  
+  signed_speed_change[interior] <- (
+    data$s[interior + 1L] -
+      data$s[interior - 1L]
+  ) / (
+    time_s[interior + 1L] -
+      time_s[interior - 1L]
+  )
+
+  tibble(
+    recording_time_s = time_s,
+    supplied_speed_raw = data$s,
+    supplied_acceleration_raw = data$a,
+    signed_speed_change_raw_per_s = signed_speed_change
+  )
+}
+
+acceleration_diagnostic <- forties |>
+  group_by(across(all_of(attempt_keys))) |>
+  group_modify(~ calculate_speed_change(.x)) |>
+  ungroup()
+```
+
+```{r summarize-acceleration-sign}
+FALLING_THRESHOLD <- -0.5
+
+acceleration_sign_summary <- acceleration_diagnostic |>
+  filter(
+    !is.na(signed_speed_change_raw_per_s)
+  ) |>
+  summarise(
+    interior_frames = n(),
+    negative_supplied_acceleration_frames = sum(
+      supplied_acceleration_raw < 0
+    ),
+    falling_speed_frames = sum(
+      signed_speed_change_raw_per_s < FALLING_THRESHOLD
+    ),
+    falling_speed_with_positive_supplied_acceleration = sum(
+      signed_speed_change_raw_per_s < FALLING_THRESHOLD &
+        supplied_acceleration_raw > 0
+    )
+  )
+
+print(acceleration_sign_summary, width = Inf)
+```
+
+## Inspect the acceleration diagnostic for the longest recording'
+
+```{r plot-acceleration-diagnostic}
+longest_acceleration <- acceleration_diagnostic |>
+  semi_join(
+    longest_recording,
+    by = attempt_keys
+  ) |>
+  arrange(recording_time_s)
+
+plot_limits <- range(
+  longest_acceleration$supplied_acceleration_raw,
+  longest_acceleration$signed_speed_change_raw_per_s,
+  na.rm = TRUE
+)
+
+plot(
+  x = longest_acceleration$recording_time_s,
+  y = longest_acceleration$supplied_acceleration_raw,
+  type = "l",
+  lwd = 2,
+  col = "#D55E00",
+  ylim = plot_limits,
+  xlab = "Seconds since first recorded frame",
+  ylab = "Supplied a / signed speed change (raw scales)",
+  main = paste(
+    longest_player$display_name[1],
+    "- acceleration definition check"
+  )
+)
+
+lines(
+  x = longest_acceleration$recording_time_s,
+  y = longest_acceleration$signed_speed_change_raw_per_s,
+  lwd = 2,
+  col = "#007C91"
+)
+
+abline(
+  h = 0,
+  lty = 2,
+  col = "gray50"
+)
+
+grid()
+
+legend(
+  "topright",
+  legend = c(
+    "Supplied a",
+    "Signed change in supplied speed"
+  ),
+  col = c("#D55E00", "#007C91"),
+  lty = 1,
+  lwd = 2,
+  bty = "n"
+)
+```
+
+Across 39,914 interior frames, 451 showed decreasing supplied speed below the diagnostic threshold of −0.5 raw units per second. Supplied acceleration remained positive in every case. Consequently, supplied a is not interpreted directly as signed change in speed; signed acceleration will be estimated from the speed series.
+
+Supplied acceleration remains positive during periods of decreasing recorded speed. It is therefore not interpreted directly as signed change in speed. Signed acceleration estimates will be derived from the supplied speed series, with the estimation method and sensitivity evaluated separately.
+
+## Acceleration function
+
+```{r acceleration-function}
+fit_acceleration <- function(data, window) {
+
+  data <- data |>
+    arrange(recording_time_s)
+
+  time_s <- data$recording_time_s
+  speed <- data$s
+  n_frames <- nrow(data)
+
+  if (!window %in% c(5L, 7L, 9L) ||
+      n_frames < window) {
+    stop("Invalid window or insufficient frames.")
+  }
+
+  if (any(!is.finite(time_s)) ||
+      any(!is.finite(speed)) ||
+      any(diff(time_s) <= 0)) {
+    stop("Time and speed must be valid, with increasing timestamps.")
+  }
+  
+  if (any(!is.finite(time_s)) ||
+      any(!is.finite(speed)) ||
+      any(diff(time_s) <= 0)) {
+    stop("Time and speed must be valid, with increasing timestamps.")
+  }
+
+  half_window <- window %/% 2L
+
+  smoothed_speed <- rep(NA_real_, n_frames)
+  signed_acceleration <- rep(NA_real_, n_frames)
+
+  for (i in seq.int(
+    half_window + 1L,
+    n_frames - half_window
+  )) {
+
+    rows <- seq.int(
+      i - half_window,
+      i + half_window
+    )
+
+    centered_time <- time_s[rows] - time_s[i]
+
+    design <- cbind(
+      1,
+      centered_time,
+      centered_time^2
+    )
+
+    fit <- lm.fit(
+      x = design,
+      y = speed[rows]
+    )
+
+    smoothed_speed[i] <- fit$coefficients[1]
+    signed_acceleration[i] <- fit$coefficients[2]
+  }
+
+  tibble(
+    recording_time_s = time_s,
+    speed_raw = speed,
+    smoothed_speed_raw = smoothed_speed,
+    signed_acceleration_raw_per_s = signed_acceleration,
+    window_frames = window
+  )
+}
+```
+
+```{r compare-window-sizes}
+window_sizes <- c(5L, 7L, 9L)
+
+smoothing_comparison <- bind_rows(
+  lapply(
+    window_sizes,
+    function(window) {
+      fit_acceleration(
+        data = longest_frames,
+        window = window
+      )
+    }
+  )
+)
+```
+
+## Define a shared comparison range'
+
+```{r shared-supported-range}
+supported_ranges <- smoothing_comparison |>
+  filter(
+    is.finite(signed_acceleration_raw_per_s)
+  ) |>
+  group_by(window_frames) |>
+  summarise(
+    supported_start_s = min(recording_time_s),
+    supported_end_s = max(recording_time_s),
+    .groups = "drop"
+  )
+
+common_start_s <- max(
+  supported_ranges$supported_start_s
+)
+
+common_end_s <- min(
+  supported_ranges$supported_end_s
+)
+
+if (common_start_s >= common_end_s) {
+  stop("No shared supported time range.")
+}
+
+supported_ranges
+
+tibble(
+  common_start_s = common_start_s,
+  common_end_s = common_end_s
+)
+```
+
+## Compare observed peaks
+
+```{r peak-summary}
+summarize_observed_peak <- function(data) {
+
+  eligible <- data |>
+    filter(
+      is.finite(signed_acceleration_raw_per_s),
+      recording_time_s >= common_start_s - 1e-8,
+      recording_time_s <= common_end_s + 1e-8
+    ) |>
+    arrange(recording_time_s)
+
+  peak_value <- max(
+    eligible$signed_acceleration_raw_per_s
+  )
+
+  tied_peaks <- eligible |>
+    filter(
+      abs(
+        signed_acceleration_raw_per_s - peak_value
+      ) < 1e-10
+    )
+
+  peak_time <- first(
+    tied_peaks$recording_time_s
+  )
+
+  tibble(
+    peak_acceleration_raw_per_s = peak_value,
+    peak_time_from_recording_start_s = peak_time,
+    tied_peak_frames = nrow(tied_peaks),
+    peak_at_search_boundary =
+      abs(peak_time - common_start_s) < 1e-8 |
+      abs(peak_time - common_end_s) < 1e-8,
+    minimum_supported_smoothed_speed = min(
+      eligible$smoothed_speed_raw
+    )
+  )
+}
+
+smoothing_peak_summary <- smoothing_comparison |>
+  group_by(window_frames) |>
+  group_modify(~ summarize_observed_peak(.x)) |>
+  ungroup()
+
+print(smoothing_peak_summary, width = Inf)
+```
+
+## Plot the acceleration estimates
+
+```{r plotting-estimates}
+window_colours <- c(
+  "5" = "#007C91",
+  "7" = "#D55E00",
+  "9" = "#6C4BA3"
+)
+
+plot(
+  x = range(longest_frames$recording_time_s),
+  y = range(
+    smoothing_comparison$signed_acceleration_raw_per_s,
+    na.rm = TRUE
+  ),
+  type = "n",
+  xlab = "Seconds since first recorded frame",
+  ylab = "Signed acceleration (raw speed units / s)",
+  main = paste(
+    longest_player$display_name[1],
+    "- smoothing sensitivity"
+  )
+)
+
+grid()
+
+for (window in window_sizes) {
+
+  curve_data <- smoothing_comparison |>
+    filter(window_frames == window)
+
+  lines(
+    x = curve_data$recording_time_s,
+    y = curve_data$signed_acceleration_raw_per_s,
+    col = window_colours[as.character(window)],
+    lwd = 2
+  )
+}
+
+abline(
+  h = 0,
+  lty = 2,
+  col = "gray60"
+)
+
+abline(
+  v = c(common_start_s, common_end_s),
+  lty = 3,
+  col = "gray60"
+)
+
+legend(
+  "topright",
+  legend = paste(window_sizes, "frames"),
+  col = unname(window_colours),
+  lty = 1,
+  lwd = 2,
+  bty = "n"
+)
+```
+
+For Jay Ward’s longest recording, all three window sizes placed the observed acceleration maximum at 4.5 seconds from recording start. Larger windows reduced its magnitude slightly. The peak was interior to the shared supported range. Physical launch remains unresolved.
+
+## Smoothing sensitivity across all recordings
+
+```{r peak-summary}
+summarize_peak_in_range <- function(data, start_s, end_s) {
+
+  eligible <- data |>
+    filter(
+      is.finite(signed_acceleration_raw_per_s),
+      recording_time_s >= start_s - 1e-8,
+      recording_time_s <= end_s + 1e-8
+    ) |>
+    arrange(recording_time_s)
+
+  peak_value <- max(
+    eligible$signed_acceleration_raw_per_s
+  )
+
+  tied_peaks <- eligible |>
+    filter(
+      abs(
+        signed_acceleration_raw_per_s - peak_value
+      ) < 1e-10
+    )
+
+  peak_time <- first(tied_peaks$recording_time_s)
+
+  tibble(
+    peak_acceleration_raw_per_s = peak_value,
+    peak_time_from_recording_start_s = peak_time,
+    tied_peak_frames = nrow(tied_peaks),
+    peak_at_search_boundary =
+      abs(peak_time - start_s) < 1e-8 |
+      abs(peak_time - end_s) < 1e-8,
+    minimum_supported_smoothed_speed = min(
+      data$smoothed_speed_raw,
+      na.rm = TRUE
+    )
+  )
+}
+```
+
+```{r all-recording-smoothing}
+all_smoothing_peaks <- forties |>
+  group_by(across(all_of(attempt_keys))) |>
+  group_modify(function(.x, .y) {
+
+    recording <- .x |>
+      arrange(timestamp) |>
+      mutate(
+        recording_time_s = round(
+          as.numeric(
+            difftime(
+              timestamp,
+              first(timestamp),
+              units = "secs"
+            )
+          ),
+          digits = 6
+        )
+      )
+
+    estimates <- bind_rows(
+      lapply(
+        window_sizes,
+        function(window) {
+          fit_acceleration(recording, window)
+        }
+      )
+    )
+
+    ranges <- estimates |>
+      filter(
+        is.finite(signed_acceleration_raw_per_s)
+      ) |>
+      group_by(window_frames) |>
+      summarise(
+        start_s = min(recording_time_s),
+        end_s = max(recording_time_s),
+        .groups = "drop"
+      )
+
+    shared_start <- max(ranges$start_s)
+    shared_end <- min(ranges$end_s)
+
+    if (shared_start >= shared_end) {
+      stop("A recording has no shared supported range.")
+    }
+
+    estimates |>
+      group_by(window_frames) |>
+      group_modify(
+        ~ summarize_peak_in_range(
+          .x,
+          start_s = shared_start,
+          end_s = shared_end
+        )
+      ) |>
+      ungroup()
+  }) |>
+  ungroup()
+```
+
+```{r recording-sensitivity}
+recording_sensitivity <- all_smoothing_peaks |>
+  group_by(across(all_of(attempt_keys))) |>
+  summarise(
+    methods_checked = n(),
+    peak_magnitude_range = max(
+      peak_acceleration_raw_per_s
+    ) - min(
+      peak_acceleration_raw_per_s
+    ),
+    peak_time_range_s = max(
+      peak_time_from_recording_start_s
+    ) - min(
+      peak_time_from_recording_start_s
+    ),
+    any_boundary_peak = any(
+      peak_at_search_boundary
+    ),
+    any_negative_smoothed_speed = any(
+      minimum_supported_smoothed_speed < 0
+    ),
+    .groups = "drop"
+  )
+
+sensitivity_summary <- recording_sensitivity |>
+  summarise(
+    recordings = n(),
+    recordings_with_three_methods = sum(
+      methods_checked == 3L
+    ),
+    median_peak_magnitude_range = median(
+      peak_magnitude_range
+    ),
+    median_peak_time_range_s = median(
+      peak_time_range_s
+    ),
+    maximum_peak_time_range_s = max(
+      peak_time_range_s
+    ),
+    timing_range_over_0_1_s = sum(
+      peak_time_range_s > 0.1 + 1e-8
+    ),
+    recordings_with_boundary_peak = sum(
+      any_boundary_peak
+    ),
+    recordings_with_negative_smoothed_speed = sum(
+      any_negative_smoothed_speed
+    )
+  )
+
+print(sensitivity_summary, width = Inf)
+```
+
+## Boundary flags by smoothing window
+
+```{r boundary-flags-by-window}
+boundary_by_window <- all_smoothing_peaks |>
+  group_by(window_frames) |>
+  summarise(
+    recordings = n(),
+    boundary_peaks = sum(peak_at_search_boundary),
+    boundary_percentage = 100 * mean(peak_at_search_boundary),
+    .groups = "drop"
+  )
+
+boundary_by_window
+```
+
+## Smoothing sensitivity by position
+
+```{r sensitivity-by-position}
+sensitivity_by_position <- recording_sensitivity |>
+  left_join(
+    player_roster |>
+      select(
+        draft_year,
+        nfl_id,
+        combine_position
+      ),
+    by = c("draft_year", "nfl_id"),
+    relationship = "many-to-one"
+  ) |>
+  group_by(combine_position) |>
+  summarise(
+    recordings = n(),
+    median_peak_magnitude_range = median(
+      peak_magnitude_range
+    ),
+    median_peak_time_range_s = median(
+      peak_time_range_s
+    ),
+    timing_range_over_0_1_s = sum(
+      peak_time_range_s > 0.1 + 1e-8
+    ),
+    recordings_with_boundary_peak = sum(
+      any_boundary_peak
+    ),
+    .groups = "drop"
+  )
+
+print(sensitivity_by_position, width = Inf)
+```
+
+## Separate smoothing effects from search-range effects
+
+```{r seperate-smoothing-search-range}
+search_range_peaks <- forties |>
+  group_by(across(all_of(attempt_keys))) |>
+  group_modify(function(.x, .y) {
+
+    recording <- .x |>
+      arrange(timestamp) |>
+      mutate(
+        recording_time_s = round(
+          as.numeric(
+            difftime(
+              timestamp,
+              first(timestamp),
+              units = "secs"
+            )
+          ),
+          digits = 6
+        )
+      )
+
+    curves <- lapply(
+      window_sizes,
+      function(window) {
+        fit_acceleration(recording, window)
+      }
+    )
+
+    supported_starts <- vapply(
+      curves,
+      function(curve) {
+        min(
+          curve$recording_time_s[
+            is.finite(curve$signed_acceleration_raw_per_s)
+          ]
+        )
+      },
+      numeric(1)
+    )
+
+    supported_ends <- vapply(
+      curves,
+      function(curve) {
+        max(
+          curve$recording_time_s[
+            is.finite(curve$signed_acceleration_raw_per_s)
+          ]
+        )
+      },
+      numeric(1)
+    )
+
+    shared_start <- max(supported_starts)
+    shared_end <- min(supported_ends)
+
+    bind_rows(
+      lapply(
+        seq_along(window_sizes),
+        function(i) {
+
+          shared_result <- summarize_peak_in_range(
+            curves[[i]],
+            start_s = shared_start,
+            end_s = shared_end
+          ) |>
+            mutate(
+              scope = "Shared range",
+              search_start_s = shared_start,
+              search_end_s = shared_end
+            )
+
+          method_result <- summarize_peak_in_range(
+            curves[[i]],
+            start_s = supported_starts[i],
+            end_s = supported_ends[i]
+          ) |>
+            mutate(
+              scope = "Method-supported",
+              search_start_s = supported_starts[i],
+              search_end_s = supported_ends[i]
+            )
+
+          bind_rows(
+            shared_result,
+            method_result
+          ) |>
+            mutate(
+              window_frames = window_sizes[i]
+            )
+        }
+      )
+    )
+  }) |>
+  ungroup()
+```
+
+```{r summarize-search-ranges}
+search_range_summary <- search_range_peaks |>
+  group_by(scope, window_frames) |>
+  summarise(
+    recordings = n(),
+    boundary_peaks = sum(
+      peak_at_search_boundary
+    ),
+    boundary_percentage = 100 * mean(
+      peak_at_search_boundary
+    ),
+    .groups = "drop"
+  ) |>
+  arrange(scope, window_frames)
+
+print(search_range_summary, width = Inf)
+```
+
+## Working measurement decisions
+
+Observed acceleration peaks will be measured within each method's complete-window supported range. The seven-frame quadratic estimator is the working specification; five- and nine-frame estimates remain available for sensitivity analysis.
+
+Boundary peaks are retained and flagged. Physical units, launch and finish coverage, and official-result mapping to individual recordings remain unresolved.
+
+## Save measurement outputs
+
+```{r save-measurements}
+MEASUREMENT_DIR <- file.path(
+  ROOT,
+  "outputs",
+  "r_restart",
+  "02_measurements"
+)
+
+dir.create(
+  MEASUREMENT_DIR,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+working_peaks <- search_range_peaks |>
+  filter(
+    scope == "Method-supported",
+    window_frames == 7L
+  )
+
+if (nrow(working_peaks) != nrow(recording_boundaries)) {
+  stop("Working peak count does not match the recording count.")
+}
+
+if (anyDuplicated(
+  working_peaks[, attempt_keys]
+) > 0L) {
+  stop("Duplicate recordings found in working peaks.")
+}
+
+readr::write_csv(
+  search_range_peaks,
+  file.path(MEASUREMENT_DIR, "all_peak_estimates.csv")
+)
+
+readr::write_csv(
+  working_peaks,
+  file.path(MEASUREMENT_DIR, "working_peak_estimates.csv")
+)
+
+readr::write_csv(
+  search_range_summary,
+  file.path(MEASUREMENT_DIR, "search_range_summary.csv")
+)
+
+measurement_handoff <- list(
+  forties = forties,
+  player_roster = player_roster,
+  attempt_keys = attempt_keys,
+  working_peaks = working_peaks,
+  all_peak_estimates = search_range_peaks,
+  recording_boundaries = recording_boundaries,
+  decisions = list(
+    working_window_frames = 7L,
+    sensitivity_windows = c(5L, 7L, 9L),
+    search_scope = "Method-supported",
+    time_reference = "First recorded frame; physical launch unresolved",
+    units = "Raw units; physical units unverified",
+    boundary_handling = "Retain and flag"
+  )
+)
+
+saveRDS(
+  measurement_handoff,
+  file.path(
+    MEASUREMENT_DIR,
+    "measurement_handoff.rds"
+  )
+)
+
+writeLines(
+  capture.output(sessionInfo()),
+  file.path(MEASUREMENT_DIR, "session_info.txt")
+)
+
+cat("Measurements saved to:", MEASUREMENT_DIR, "\n")
+```
+
+
+
+

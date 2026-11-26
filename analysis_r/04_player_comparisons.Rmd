@@ -1,0 +1,1381 @@
+---
+title: "04 - Player Comparisons"
+author: "Hunter Clark"
+output: html_document
+---
+
+This notebook compares recorded speed buildup among players sharing a published official 40 time within a Combine position and draft year.
+
+## Setup
+
+```{r setup, message = FALSE}
+library(dplyr)
+library(ggplot2)
+library(gganimate)
+
+ROOT <- normalizePath(getwd())
+
+while (!(dir.exists(file.path(ROOT, "analysis_r")) &&
+         dir.exists(file.path(ROOT, "data")))) {
+
+  parent <- dirname(ROOT)
+
+  if (parent == ROOT) {
+    stop("Open the project folder first.")
+  }
+
+  ROOT <- parent
+}
+
+knitr::opts_knit$set(root.dir = ROOT)
+```
+
+## Load the profile handoff
+
+```{r load-profiles}
+handoff_path <- file.path(
+  ROOT,
+  "outputs",
+  "r_restart",
+  "03_consistency",
+  "profile_handoff.rds"
+)
+
+if (!file.exists(handoff_path)) {
+  stop("Complete and save 03_profile_consistency.Rmd first.")
+}
+
+profiles <- readRDS(handoff_path)
+
+player_roster <- profiles$player_roster
+attempt_keys <- profiles$attempt_keys
+
+profiles$peak_decisions
+```
+
+## Choosing the comparison
+
+```{r comparison-settings}
+POSITION <- "WR"
+DRAFT_YEAR <- "2023"
+
+# Leave NA to select the official time shared by the most players
+# in the selected position and year.
+FORTY_TIME <- NA_real_
+
+# Leave NULL to display up to four players from that time group.
+# Alternatively, enter player IDs as text:
+# PLAYER_IDS <- c("55939", "56118")
+PLAYER_IDS <- NULL
+```
+
+## Preparing official results
+
+```{r official-results}
+comparison_roster <- player_roster |>
+  mutate(
+    official_forty_s = suppressWarnings(
+      as.numeric(forty)
+    )
+  )
+
+if (any(!is.finite(comparison_roster$official_forty_s)) ||
+    any(comparison_roster$official_forty_s <= 0)) {
+  stop("Review missing, unreadable, or nonpositive official 40 results.")
+}
+
+if (any(
+  abs(
+    comparison_roster$official_forty_s * 100 -
+      round(comparison_roster$official_forty_s * 100)
+  ) > 1e-6
+)) {
+  stop("Review official times reported beyond hundredth-second precision.")
+}
+
+comparison_roster <- comparison_roster |>
+  mutate(
+    official_forty_hundredths = as.integer(
+      round(official_forty_s * 100)
+    )
+  )
+```
+
+## Available same-time groups
+
+```{r same-time-groups}
+position_year_roster <- comparison_roster |>
+  filter(
+    combine_position == POSITION,
+    draft_year == DRAFT_YEAR
+  )
+
+if (nrow(position_year_roster) == 0L) {
+  stop("No players match the selected position and draft year.")
+}
+
+available_groups <- position_year_roster |>
+  count(
+    official_forty_hundredths,
+    name = "players"
+  ) |>
+  filter(players >= 2L) |>
+  mutate(
+    official_forty_s = official_forty_hundredths / 100
+  ) |>
+  arrange(
+    desc(players),
+    official_forty_hundredths
+  )
+
+available_groups
+```
+
+## Players selection
+
+```{r players-selection}
+if (nrow(available_groups) == 0L) {
+  stop("No exact official-time group contains at least two players.")
+}
+
+if (is.na(FORTY_TIME)) {
+
+  selected_time_hundredths <- first(
+    available_groups$official_forty_hundredths
+  )
+
+} else {
+
+  if (!is.finite(FORTY_TIME) ||
+      FORTY_TIME <= 0 ||
+      abs(FORTY_TIME * 100 - round(FORTY_TIME * 100)) > 1e-6) {
+    stop("Enter a positive official time at hundredth-second precision.")
+  }
+
+  selected_time_hundredths <- as.integer(
+    round(FORTY_TIME * 100)
+  )
+}
+
+eligible_players <- position_year_roster |>
+  filter(
+    official_forty_hundredths == selected_time_hundredths
+  ) |>
+  arrange(
+    display_name,
+    nfl_id
+  )
+
+if (is.null(PLAYER_IDS)) {
+
+  selected_players <- eligible_players |>
+    slice_head(n = 4)
+
+} else {
+
+  if (anyDuplicated(PLAYER_IDS) > 0L ||
+      length(setdiff(PLAYER_IDS, eligible_players$nfl_id)) > 0L) {
+    stop("Player IDs must be unique and belong to the selected comparison group.")
+  }
+
+  selected_players <- eligible_players |>
+    filter(nfl_id %in% PLAYER_IDS)
+}
+
+if (nrow(selected_players) < 2L ||
+    nrow(selected_players) > 4L) {
+  stop("Choose between two and four eligible players.")
+}
+
+selected_players |>
+  select(
+    display_name,
+    nfl_id,
+    draft_year,
+    combine_position,
+    nfl_position,
+    official_forty_s,
+    ten_yd_split,
+    recordings
+  )
+```
+
+## Prepare individual recording curves
+
+```{r individual-recording-curves}
+comparison_curves <- profiles$forties |>
+  semi_join(
+    selected_players,
+    by = c("draft_year", "nfl_id")
+  ) |>
+  left_join(
+    selected_players |>
+      select(
+        draft_year,
+        nfl_id,
+        display_name
+      ),
+    by = c("draft_year", "nfl_id"),
+    relationship = "many-to-one"
+  ) |>
+  group_by(across(all_of(attempt_keys))) |>
+  arrange(timestamp, .by_group = TRUE) |>
+  mutate(
+    recording_time_s = round(
+      as.numeric(
+        difftime(
+          timestamp,
+          first(timestamp),
+          units = "secs"
+        )
+      ),
+      digits = 6
+    )
+  ) |>
+  ungroup()
+
+selected_peaks <- profiles$named_peaks |>
+  semi_join(
+    selected_players,
+    by = c("draft_year", "nfl_id")
+  )
+
+peak_frame_values <- comparison_curves |>
+  select(
+    all_of(attempt_keys),
+    recording_time_s,
+    s
+  ) |>
+  rename(
+    peak_time_from_recording_start_s = recording_time_s,
+    speed_at_peak_raw = s
+  )
+
+peak_markers <- selected_peaks |>
+  left_join(
+    peak_frame_values,
+    by = c(
+      attempt_keys,
+      "peak_time_from_recording_start_s"
+    ),
+    relationship = "one-to-one"
+  ) |>
+  mutate(
+    peak_type = if_else(
+      peak_at_search_boundary,
+      "Boundary peak",
+      "Interior peak"
+    )
+  )
+
+if (anyNA(peak_markers$speed_at_peak_raw)) {
+  stop("An observed peak could not be matched to its tracking frame.")
+}
+```
+
+## Comparing recorded speed buildups
+
+```{r compare-recorded-buildups, fig.width=10, fig.height=6}
+speed_comparison_plot <- ggplot(
+  comparison_curves,
+  aes(
+    x = recording_time_s,
+    y = s,
+    colour = display_name,
+    linetype = factor(attempt),
+    group = interaction(nfl_id, event_id, attempt)
+  )
+) +
+  geom_line(linewidth = 0.9) +
+  geom_point(
+    data = peak_markers,
+    aes(
+      x = peak_time_from_recording_start_s,
+      y = speed_at_peak_raw,
+      colour = display_name,
+      shape = peak_type
+    ),
+    inherit.aes = FALSE,
+    size = 3
+  ) +
+  scale_shape_manual(
+    values = c(
+      "Interior peak" = 16,
+      "Boundary peak" = 17
+    )
+  ) +
+  labs(
+    title = "Same official forty, different recorded speed buildup",
+    subtitle = paste0(
+      DRAFT_YEAR,
+      " Combine ",
+      POSITION,
+      " | Official 40: ",
+      sprintf("%.2f", selected_time_hundredths / 100),
+      " s"
+    ),
+    x = "Seconds since first recorded frame",
+    y = "Supplied speed (raw units)",
+    colour = "Player",
+    linetype = "Attempt label",
+    shape = "Observed acceleration maximum",
+    caption = paste(
+      "All selected recordings shown. Points mark seven-frame acceleration peaks.",
+      "Recording start is not verified physical launch.",
+      sep = "\n"
+    )
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    panel.grid.minor = element_blank()
+  )
+
+speed_comparison_plot
+```
+
+## Selected-player measurements
+
+```{r selected-measurements}
+comparison_table <- selected_peaks |>
+  select(
+    all_of(attempt_keys),
+    peak_acceleration_raw_per_s,
+    peak_time_from_recording_start_s,
+    peak_at_search_boundary
+  ) |>
+  left_join(
+    selected_players |>
+      select(
+        draft_year,
+        nfl_id,
+        display_name,
+        official_forty_s,
+        ten_yd_split
+      ),
+    by = c("draft_year", "nfl_id"),
+    relationship = "many-to-one"
+  ) |>
+  left_join(
+    profiles$named_intervals |>
+      select(
+        all_of(attempt_keys),
+        status,
+        interval_s
+      ),
+    by = attempt_keys,
+    relationship = "one-to-one"
+  ) |>
+  arrange(
+    display_name,
+    as.numeric(attempt)
+  ) |>
+  select(
+    display_name,
+    attempt,
+    official_forty_s,
+    ten_yd_split,
+    peak_acceleration_raw_per_s,
+    peak_time_from_recording_start_s,
+    peak_at_search_boundary,
+    interval_s,
+    status
+  )
+
+print(comparison_table, n = Inf, width = Inf)
+```
+
+## Early recorded speed buildup
+
+```{r early-speed-comparison, fig.width=10, fig.height=6}
+speed_comparison_plot +
+  coord_cartesian(
+    xlim = c(0, 1.5)
+  ) +
+  labs(
+    title = "Early recorded speed buildup",
+    subtitle = paste0(
+      DRAFT_YEAR,
+      " Combine ",
+      POSITION,
+      " | Shared published 40: ",
+      sprintf("%.2f", selected_time_hundredths / 100),
+      " s"
+    )
+  )
+```
+
+## Compare curves relative to an observed speed crossing
+
+```{r crossing-references}
+comparison_references <- profiles$named_intervals |>
+  semi_join(
+    selected_players,
+    by = c("draft_year", "nfl_id")
+  ) |>
+  select(
+    all_of(attempt_keys),
+    status,
+    lower_crossing_s
+  )
+
+comparison_references |>
+  count(
+    status,
+    name = "recordings"
+  )
+
+if (any(comparison_references$status != "Measured") ||
+    anyNA(comparison_references$lower_crossing_s)) {
+  stop(
+    "A selected recording lacks the crossing reference. Retain the recording-start comparison."
+  )
+}
+
+aligned_curves <- comparison_curves |>
+  left_join(
+    comparison_references |>
+      select(
+        all_of(attempt_keys),
+        lower_crossing_s
+      ),
+    by = attempt_keys,
+    relationship = "many-to-one"
+  ) |>
+  mutate(
+    time_from_speed_crossing_s =
+      recording_time_s - lower_crossing_s
+  )
+
+aligned_peaks <- peak_markers |>
+  left_join(
+    comparison_references |>
+      select(
+        all_of(attempt_keys),
+        lower_crossing_s
+      ),
+    by = attempt_keys,
+    relationship = "one-to-one"
+  ) |>
+  mutate(
+    peak_time_from_speed_crossing_s =
+      peak_time_from_recording_start_s - lower_crossing_s
+  )
+
+if (anyNA(aligned_curves$lower_crossing_s) ||
+    anyNA(aligned_peaks$lower_crossing_s)) {
+  stop("A recording could not be matched to its crossing reference.")
+}
+```
+
+```{r plot-crossing-aligned-speed, fig.width=10, fig.height=6}
+crossing_aligned_plot <- ggplot(
+  aligned_curves,
+  aes(
+    x = time_from_speed_crossing_s,
+    y = s,
+    colour = display_name,
+    linetype = factor(attempt),
+    group = interaction(nfl_id, event_id, attempt)
+  )
+) +
+  geom_vline(
+    xintercept = 0,
+    linetype = "dotted",
+    colour = "gray50"
+  ) +
+  geom_hline(
+    yintercept = c(3, 7),
+    linetype = "dotted",
+    colour = "gray70"
+  ) +
+  geom_line(linewidth = 0.9) +
+  geom_point(
+    data = aligned_peaks,
+    aes(
+      x = peak_time_from_speed_crossing_s,
+      y = speed_at_peak_raw,
+      colour = display_name,
+      shape = peak_type
+    ),
+    inherit.aes = FALSE,
+    size = 3
+  ) +
+  scale_shape_manual(
+    values = c(
+      "Interior peak" = 16,
+      "Boundary peak" = 17
+    )
+  ) +
+  coord_cartesian(
+    xlim = c(-0.25, 1.25)
+  ) +
+  labs(
+    title = "Speed buildup from an observed crossing",
+    subtitle = paste0(
+      DRAFT_YEAR,
+      " Combine ",
+      POSITION,
+      " | Shared published 40: ",
+      sprintf("%.2f", selected_time_hundredths / 100),
+      " s"
+    ),
+    x = "Seconds relative to observed 3-unit speed crossing",
+    y = "Supplied speed (raw units)",
+    colour = "Player",
+    linetype = "Attempt label",
+    shape = "Observed acceleration maximum",
+    caption = paste(
+      "Reference is the lower crossing used in the measured 3–7 interval.",
+      "It is not physical launch. Peak estimates and boundary flags are unchanged.",
+      sep = "\n"
+    )
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    legend.box = "vertical",
+    panel.grid.minor = element_blank()
+  )
+
+crossing_aligned_plot
+```
+
+The selected players’ speed curves become more closely aligned when time is referenced to their observed 3-unit speed crossing. This illustrates the sensitivity of recording-start comparisons to the timing reference. Differences remain in the measured intervals and individual recordings.
+
+## Peak timing under alternative references
+
+```{r compare-peak-time}
+aligned_peak_table <- aligned_peaks |>
+  select(
+    display_name,
+    attempt,
+    peak_acceleration_raw_per_s,
+    peak_time_from_recording_start_s,
+    peak_time_from_speed_crossing_s,
+    peak_type
+  ) |>
+  arrange(
+    display_name,
+    as.numeric(attempt)
+  )
+
+print(aligned_peak_table, n = Inf, width = Inf)
+```
+
+Among four 2023 Combine WRs sharing a published 4.54-second 40, observed peak timing depends on the selected reference. Interior peaks occur approximately 0.05–0.17 seconds after the observed 3-unit speed crossing. Two additional maxima fall at the supported-region boundary. The recordings illustrate differences in observed acceleration profiles, but do not establish precise launch-relative timing or a stable player ranking.
+
+## Save comparison outputs
+
+```{r save-comparison-tables}
+COMPARISON_DIR <- file.path(
+  ROOT,
+  "outputs",
+  "r_restart",
+  "04_comparisons"
+)
+
+FIGURE_DIR <- file.path(
+  COMPARISON_DIR,
+  "figures"
+)
+
+dir.create(
+  FIGURE_DIR,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+comparison_tables <- list(
+  selected_players = selected_players,
+  recording_measurements = comparison_table,
+  peak_timing_references = aligned_peak_table
+)
+
+for (table_name in names(comparison_tables)) {
+  readr::write_csv(
+    comparison_tables[[table_name]],
+    file.path(
+      COMPARISON_DIR,
+      paste0(table_name, ".csv")
+    )
+  )
+}
+```
+
+```{r save-comparison-figures}
+early_speed_plot <- speed_comparison_plot +
+  coord_cartesian(
+    xlim = c(0, 1.5)
+  ) +
+  labs(
+    title = "Early recorded speed buildup"
+  )
+
+comparison_plots <- list(
+  full_recorded_speed = speed_comparison_plot,
+  early_recorded_speed = early_speed_plot,
+  crossing_aligned_speed = crossing_aligned_plot
+)
+
+for (plot_name in names(comparison_plots)) {
+  ggsave(
+    filename = file.path(
+      FIGURE_DIR,
+      paste0(plot_name, ".png")
+    ),
+    plot = comparison_plots[[plot_name]],
+    width = 11,
+    height = 7,
+    units = "in",
+    dpi = 300,
+    bg = "white"
+  )
+}
+```
+
+```{r save-comparison-handoff}
+comparison_handoff <- list(
+  settings = list(
+    combine_position = POSITION,
+    draft_year = DRAFT_YEAR,
+    official_forty_s = selected_time_hundredths / 100,
+    selected_player_ids = selected_players$nfl_id
+  ),
+
+  selected_players = selected_players,
+  recording_measurements = comparison_table,
+  peak_timing_references = aligned_peak_table,
+
+  recording_start_curves = comparison_curves,
+  crossing_aligned_curves = aligned_curves,
+  crossing_aligned_peaks = aligned_peaks,
+
+  limitations = c(
+    "Physical units remain unverified",
+    "Recording start is not verified physical launch",
+    "Official player-level time is not mapped to individual recordings",
+    "Boundary peaks remain flagged",
+    "Crossing interpolation does not increase sensor resolution",
+    "Selected-player findings are descriptive"
+  )
+)
+
+saveRDS(
+  comparison_handoff,
+  file.path(
+    COMPARISON_DIR,
+    "comparison_handoff.rds"
+  )
+)
+
+writeLines(
+  capture.output(sessionInfo()),
+  file.path(COMPARISON_DIR, "session_info.txt")
+)
+```
+
+## Confirm saved files
+
+```{r verify-comparison-files}
+expected_files <- c(
+  "selected_players.csv",
+  "recording_measurements.csv",
+  "peak_timing_references.csv",
+  "comparison_handoff.rds",
+  "session_info.txt",
+  "figures/full_recorded_speed.png",
+  "figures/early_recorded_speed.png",
+  "figures/crossing_aligned_speed.png"
+)
+
+export_check <- tibble(
+  file = expected_files,
+  exists = file.exists(
+    file.path(COMPARISON_DIR, expected_files)
+  ),
+  bytes = file.info(
+    file.path(COMPARISON_DIR, expected_files)
+  )$size
+)
+
+print(export_check, n = Inf)
+
+if (any(!export_check$exists) ||
+    anyNA(export_check$bytes) ||
+    any(export_check$bytes <= 0)) {
+  stop("A comparison output is missing or empty.")
+}
+
+cat("Comparison outputs saved to:", COMPARISON_DIR, "\n")
+```
+
+## Animation
+
+```{r animation}
+replay_root <- normalizePath(getwd())
+
+handoff_relative <- file.path(
+  "outputs",
+  "r_restart",
+  "04_comparisons",
+  "comparison_handoff.rds"
+)
+
+while (!file.exists(file.path(replay_root, handoff_relative))) {
+  parent <- dirname(replay_root)
+
+  if (parent == replay_root) {
+    stop(
+      "Open the R project containing ",
+      "comparison_handoff.rds before running this code."
+    )
+  }
+
+  replay_root <- parent
+}
+
+comparison <- readRDS(
+  file.path(replay_root, handoff_relative)
+)
+
+replay_output <- file.path(
+  replay_root,
+  "outputs",
+  "r_restart",
+  "04_comparisons",
+  "animations"
+)
+
+dir.create(
+  replay_output,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+keys <- c(
+  "draft_year",
+  "event_id",
+  "nfl_id",
+  "entity_type",
+  "drill_name",
+  "attempt"
+)
+
+# Prepare each recording.
+frames <- comparison$recording_start_curves |>
+  left_join(
+    comparison$selected_players |>
+      select(
+        draft_year,
+        nfl_id,
+        official_forty_s
+      ),
+    by = c("draft_year", "nfl_id"),
+    relationship = "many-to-one"
+  ) |>
+  group_by(across(all_of(keys))) |>
+  arrange(timestamp, .by_group = TRUE) |>
+  mutate(
+    dx = last(x) - first(x),
+    dy = last(y) - first(y),
+    net = sqrt(dx^2 + dy^2),
+
+    forward_displacement_raw = (
+      (x - first(x)) * dx +
+        (y - first(y)) * dy
+    ) / net
+  ) |>
+  ungroup() |>
+  arrange(
+    display_name,
+    as.numeric(attempt),
+    recording_time_s
+  ) |>
+  mutate(
+    frame_id = as.integer(
+      round(recording_time_s / 0.1)
+    ),
+
+    recording_label = paste(
+      display_name,
+      "| Attempt",
+      attempt
+    )
+  )
+
+# Check required measurements.
+if (
+  any(!is.finite(frames$forward_displacement_raw)) ||
+  anyNA(frames$official_forty_s) ||
+  any(
+    abs(
+      frames$recording_time_s -
+        frames$frame_id * 0.1
+    ) > 1e-6
+  )
+) {
+  stop(
+    "Review positions, official results, ",
+    "or the 0.1-second time grid."
+  )
+}
+
+if (anyDuplicated(frames[c(keys, "frame_id")])) {
+  stop("Duplicate recording/frame keys.")
+}
+
+# Assign a separate lane to each attempt.
+lane_labels <- rev(
+  unique(frames$recording_label)
+)
+
+frame_ids <- seq.int(
+  min(frames$frame_id),
+  max(frames$frame_id)
+)
+
+frames <- frames |>
+  mutate(
+    lane = match(
+      recording_label,
+      lane_labels
+    )
+  )
+
+lanes <- frames |>
+  distinct(
+    recording_label,
+    display_name,
+    attempt,
+    official_forty_s,
+    lane
+  ) |>
+  arrange(lane) |>
+  mutate(
+    label = paste0(
+      recording_label,
+      "\nPublished 40: ",
+      sprintf("%.2f s", official_forty_s)
+    )
+  )
+
+recordings <- frames |>
+  group_by(across(all_of(keys))) |>
+  group_split(.keep = TRUE)
+
+# Build moving points and recent movement trails.
+point_parts <- list()
+trail_parts <- list()
+
+for (k in frame_ids) {
+  for (g in recordings) {
+    available <- g |>
+      filter(frame_id <= k)
+
+    if (nrow(available) == 0L) {
+      next
+    }
+
+    current <- available |>
+      slice_tail(n = 1)
+
+    ended <- k > max(g$frame_id)
+
+    current <- current |>
+      mutate(
+        animation_frame = factor(
+          k,
+          levels = frame_ids
+        ),
+
+        state = if (ended) {
+          "Recording ended"
+        } else {
+          "Observed frame"
+        },
+
+        clock_label = if (ended) {
+          sprintf(
+            "Tracking ends: %.1f s",
+            recording_time_s
+          )
+        } else {
+          sprintf(
+            "%.1f s",
+            recording_time_s
+          )
+        },
+
+        speed_label = if (ended) {
+          sprintf("last speed %.1f", s)
+        } else {
+          sprintf("speed %.1f", s)
+        }
+      )
+
+    point_parts[[length(point_parts) + 1L]] <- current
+
+    recent <- available |>
+      filter(
+        frame_id >= max(available$frame_id) - 5L
+      ) |>
+      mutate(
+        animation_frame = factor(
+          k,
+          levels = frame_ids
+        )
+      )
+
+    trail_parts[[length(trail_parts) + 1L]] <- recent
+  }
+}
+
+replay_points <- bind_rows(point_parts)
+replay_trails <- bind_rows(trail_parts)
+
+# Locate the saved acceleration peaks.
+peak_positions <- comparison$crossing_aligned_peaks |>
+  select(
+    all_of(keys),
+    peak_time_from_recording_start_s,
+    peak_type
+  ) |>
+  mutate(
+    frame_id = as.integer(
+      round(
+        peak_time_from_recording_start_s / 0.1
+      )
+    )
+  ) |>
+  left_join(
+    frames |>
+      select(
+        all_of(keys),
+        frame_id,
+        forward_displacement_raw,
+        lane,
+        display_name
+      ),
+    by = c(keys, "frame_id"),
+    relationship = "one-to-one"
+  )
+
+if (anyNA(peak_positions$forward_displacement_raw)) {
+  stop("A peak could not be located.")
+}
+
+peak_history <- bind_rows(
+  lapply(
+    frame_ids,
+    function(k) {
+      peak_positions |>
+        filter(frame_id <= k) |>
+        mutate(
+          animation_frame = factor(
+            k,
+            levels = frame_ids
+          )
+        )
+    }
+  )
+)
+
+# Player colors.
+player_names <- sort(
+  unique(frames$display_name)
+)
+
+base_colors <- c(
+  "#5EE6F2",
+  "#FFC46B",
+  "#D4B2FF",
+  "#F9F477"
+)
+
+player_colors <- setNames(
+  rep(
+    base_colors,
+    length.out = length(player_names)
+  ),
+  player_names
+)
+
+distance_max <- max(
+  frames$forward_displacement_raw
+)
+
+distance_min <- min(
+  frames$forward_displacement_raw
+)
+
+same_official <- unique(
+  frames$official_forty_s
+)
+
+official_header <- if (length(same_official) == 1L) {
+  paste0(
+    "Published 40: ",
+    sprintf("%.2f s", same_official),
+    "  |  "
+  )
+} else {
+  "Published 40s listed beside players  |  "
+}
+
+# Decorative football-field markings.
+turf_bands <- tibble(
+  xmin = seq(
+    0,
+    distance_max,
+    by = 10
+  ),
+
+  xmax = pmin(
+    xmin + 5,
+    distance_max + 1
+  )
+)
+
+field_lines <- tibble(
+  x = seq(
+    0,
+    distance_max,
+    by = 5
+  )
+)
+
+field_hashes <- expand.grid(
+  x = seq(
+    1,
+    floor(distance_max),
+    by = 1
+  ),
+
+  y = seq(
+    0.75,
+    length(lane_labels) + 0.25,
+    by = 1
+  )
+)
+
+# Create the animation with larger text.
+replay_plot <- ggplot(
+  replay_points,
+  aes(
+    x = forward_displacement_raw,
+    y = lane,
+    colour = display_name,
+    group = recording_label
+  )
+) +
+  geom_rect(
+    data = turf_bands,
+    aes(
+      xmin = xmin,
+      xmax = xmax,
+      ymin = 0.55,
+      ymax = length(lane_labels) + 0.45
+    ),
+    inherit.aes = FALSE,
+    fill = "#286940",
+    colour = NA
+  ) +
+  annotate(
+    "rect",
+    xmin = 0,
+    xmax = distance_max + 1,
+    ymin = 0.55,
+    ymax = length(lane_labels) + 0.45,
+    fill = NA,
+    colour = "white",
+    linewidth = 0.8
+  ) +
+  geom_segment(
+    data = field_lines,
+    aes(
+      x = x,
+      xend = x,
+      y = 0.55,
+      yend = length(lane_labels) + 0.45
+    ),
+    inherit.aes = FALSE,
+    colour = "white",
+    linewidth = 0.55,
+    alpha = 0.75
+  ) +
+  geom_segment(
+    data = field_hashes,
+    aes(
+      x = x - 0.12,
+      xend = x + 0.12,
+      y = y,
+      yend = y
+    ),
+    inherit.aes = FALSE,
+    colour = "white",
+    linewidth = 0.6,
+    alpha = 0.7
+  ) +
+  geom_path(
+    data = replay_trails,
+    linewidth = 1.4,
+    alpha = 0.6
+  ) +
+  geom_point(
+    data = peak_history,
+    aes(
+      x = forward_displacement_raw,
+      y = lane,
+      colour = display_name,
+      shape = peak_type
+    ),
+    inherit.aes = FALSE,
+    size = 3.8,
+    fill = "#185532",
+    stroke = 1.2
+  ) +
+  geom_point(
+    aes(shape = state),
+    size = 5,
+    stroke = 1.3
+  ) +
+  geom_text(
+    aes(label = speed_label),
+    nudge_y = 0.26,
+    hjust = 0.3,
+    size = 6.2,
+    colour = "white"
+  ) +
+  geom_text(
+    aes(
+      x = distance_max + 11,
+      label = clock_label
+    ),
+    colour = "white",
+    size = 5.8,
+    fontface = "bold"
+  ) +
+  annotate(
+    "text",
+    x = distance_max + 11,
+    y = length(lane_labels) + 0.65,
+    label = "Tracking clock",
+    size = 6,
+    colour = "white",
+    fontface = "bold"
+  ) +
+  scale_colour_manual(
+    values = player_colors,
+    limits = player_names,
+    drop = FALSE
+  ) +
+  scale_shape_manual(
+    values = c(
+      "Observed frame" = 16,
+      "Recording ended" = 1,
+      "Interior peak" = 23,
+      "Boundary peak" = 24
+    )
+  ) +
+  scale_y_continuous(
+    breaks = lanes$lane,
+    labels = lanes$label
+  ) +
+  scale_x_continuous(
+    breaks = seq(
+      0,
+      floor(distance_max / 10) * 10,
+      by = 10
+    )
+  ) +
+  coord_cartesian(
+    xlim = c(
+      min(-1, distance_min - 1),
+      distance_max + 21
+    ),
+
+    ylim = c(
+      0.45,
+      length(lane_labels) + 0.95
+    )
+  ) +
+  labs(
+    title = "Same Forty, Different Gears",
+
+    subtitle = paste0(
+      official_header,
+      "Elapsed recording time: ",
+      "{sprintf('%.1f', as.numeric(current_frame) / 10)} s"
+    ),
+
+    x = paste(
+      "Recorded forward displacement from first location",
+      "(raw coordinate units)"
+    ),
+
+    y = NULL,
+
+    caption = paste(
+      paste(
+        "Field styling is illustrative;",
+        "distance remains in raw coordinate units.",
+        "Published 40 is a player-level result."
+      ),
+
+      paste(
+        "The tracking clock starts at the first recorded frame,",
+        "not verified launch.",
+        "Tracking ends does not mean the runner stopped."
+      ),
+
+      paste(
+        "Numbers by dots are supplied speed (raw units).",
+        "Hollow circles mark ended recordings;",
+        "diamonds/triangles mark interior/boundary observed peaks."
+      ),
+
+      sep = "\n"
+    )
+  ) +
+  theme_minimal(base_size = 15) +
+  theme(
+    plot.background = element_rect(
+      fill = "#FAFBFD",
+      colour = NA
+    ),
+
+    panel.background = element_rect(
+      fill = "#185532",
+      colour = NA
+    ),
+
+    panel.grid = element_blank(),
+
+    text = element_text(
+      colour = "#18344F"
+    ),
+
+    axis.text.y = element_text(
+      size = 17,
+      lineheight = 1.1
+    ),
+
+    axis.text.x = element_text(
+      size = 17
+    ),
+
+    axis.title.x = element_text(
+      size = 13,
+      margin = margin(t = 12)
+    ),
+
+    legend.position = "none",
+
+    plot.title = element_text(
+      face = "bold",
+      size = 27
+    ),
+
+    plot.subtitle = element_text(
+      size = 25,
+      margin = margin(t = 8, b = 18)
+    ),
+
+    plot.caption = element_text(
+      size = 10,
+      hjust = 0,
+      margin = margin(t = 16)
+    ),
+
+    plot.margin = margin(
+      20, 25, 18, 20
+    )
+  ) +
+  transition_manual(animation_frame)
+
+# Render the recorded 0.1-second steps.
+frame_dir <- file.path(
+  replay_output,
+  "field_replay_frames"
+)
+
+dir.create(
+  frame_dir,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+png_files <- animate(
+  replay_plot,
+  nframes = length(frame_ids) + 10L,
+  fps = 10,
+  width = 1600,
+  height = 1000,
+  device = "png",
+  end_pause = 10,
+  renderer = file_renderer(
+    dir = frame_dir,
+    prefix = "frame_",
+    overwrite = TRUE
+  )
+)
+
+# Save the GIF.
+gif_file <- file.path(
+  replay_output,
+  "selected_forty_replay_field.gif"
+)
+
+gifski::gifski(
+  png_files = png_files,
+  gif_file = gif_file,
+  width = 1600,
+  height = 1000,
+  delay = 0.1,
+  loop = TRUE,
+  progress = FALSE
+)
+
+# Save a still preview around one second.
+preview_index <- which(
+  frame_ids == min(10L, max(frame_ids))
+)[1]
+
+preview_file <- file.path(
+  replay_output,
+  "selected_forty_replay_field_preview.png"
+)
+
+file.copy(
+  png_files[preview_index],
+  preview_file,
+  overwrite = TRUE
+)
+
+# Show published times and recording durations.
+recording_times <- frames |>
+  group_by(recording_label) |>
+  summarise(
+    published_forty_s = first(official_forty_s),
+    observed_duration_s = max(recording_time_s),
+    .groups = "drop"
+  )
+
+print(recording_times, width = Inf)
+
+cat(
+  "\nSaved GIF to:\n",
+  normalizePath(gif_file),
+  "\n"
+)
+
+# Display when knitting the Rmd.
+knitr::include_graphics(gif_file)
+```
+
+
+
+
+

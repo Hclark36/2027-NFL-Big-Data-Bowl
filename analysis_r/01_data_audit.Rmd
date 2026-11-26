@@ -1,0 +1,716 @@
+---
+title: "01 - Data Audit"
+author: "Hunter Clark"
+output:
+  html_document:
+    toc: true
+---
+
+## Purpose of the project
+
+My question is: 
+
+**Among players in the same position group with similar published 40-yard dash times, how does recorded speed buildup differ?**
+
+This notebook inspects the player, Combine results, and tracking datasets to confirm their structure and available drills before beginning the analysis.
+
+## The setup
+
+```{r setup, message=FALSE}
+library(dplyr)
+library(readr)
+
+ROOT <- normalizePath(getwd())
+
+while (!(dir.exists(file.path(ROOT, "analysis_r")) &&
+         dir.exists(file.path(ROOT, "data")))) {
+
+  parent <- dirname(ROOT)
+
+  if (parent == ROOT) {
+    stop("Open the nfl-big-data-bowl-2027 project folder first.")
+  }
+
+  ROOT <- parent
+}
+
+knitr::opts_knit$set(root.dir = ROOT)
+```
+
+## Locating and Loading the data
+
+```{r locate-loading-data}
+existing_data_dir <- "/Users/hunterclark/Documents/New project/nfl-big-data-bowl-2027/data/kagglehub/competitions/nfl-big-data-bowl-2027/nfl-big-data-bowl-2027"
+
+if (nzchar(existing_data_dir)) {
+  data_dir <- normalizePath(
+    existing_data_dir,
+    mustWork = TRUE
+  )
+} else {
+  tracking_paths <- list.files(
+    path = file.path(ROOT, "data"),
+    pattern = "^combine_tracking[.]csv$",
+    recursive = TRUE,
+    full.names = TRUE
+  )
+  
+  if(length(tracking_paths) != 1L) {
+    stop("Set EXISTING_DATA_DIR to your competition download folder.")
+  }
+  
+  data_dir <- dirname(tracking_paths[1])
+}
+
+required_files <- c(
+  "players.csv",
+  "combine_results.csv",
+  "combine_tracking.csv"
+)
+
+if (!all(file.exists(file.path(data_dir, required_files)))) {
+  stop("The selected folder is missing a required CSV.")
+}
+
+data_dir
+```
+
+## Loading tables
+
+```{r loading-tables, message = FALSE}
+players <- read_csv(
+  file.path(data_dir, "players.csv"),
+  col_types = cols(.default = col_character()),
+  na = c("", "NA", "<NA>")
+)
+
+combine_results <- read_csv(
+  file.path(data_dir, "combine_results.csv"),
+  col_types = cols(.default = col_character()),
+  na = c("", "NA", "<NA>")
+)
+
+combine_tracking <- read_csv(
+  file.path(data_dir, "combine_tracking.csv"),
+  col_types = cols(.default = col_character()),
+  na = c("", "NA", "<NA>")
+)
+```
+
+## Table dimensions
+
+```{r table-dimensions}
+table_dimensions <- tibble(
+  table = c(
+    "players",
+    "combine_results",
+    "combine_tracking"
+  ),
+  rows = c(
+    nrow(players),
+    nrow(combine_results),
+    nrow(combine_tracking)
+  ),
+  columns = c(
+    ncol(players),
+    ncol(combine_results),
+    ncol(combine_tracking)
+  )
+)
+
+table_dimensions
+```
+
+## Columns and example values
+
+```{r preview-columns}
+glimpse(players)
+
+glimpse(combine_results)
+
+glimpse(combine_tracking)
+```
+
+```{r preview-rows}
+head(players, 3)
+
+head(combine_results, 3)
+
+head(combine_tracking, 3)
+```
+
+## Available drills and entities
+
+```{r check-columns}
+needed_columns <- c(
+  "drill_type",
+  "drill_name",
+  "entity_type"
+)
+
+missing_columns <- setdiff(
+  needed_columns,
+  names(combine_tracking)
+)
+
+if (length(missing_columns) > 0) {
+  stop(
+    paste(
+      "Missing tracking columns:",
+      paste(missing_columns, collapse = ", ")
+    )
+  )
+}
+```
+
+```{r drill-counts}
+drill_counts <- combine_tracking |>
+  count(
+    drill_type,
+    drill_name,
+    entity_type,
+    name = "frames",
+    sort = TRUE
+  )
+
+print(drill_counts, n = Inf)
+```
+
+```{r entity-counts}
+entity_counts <- combine_tracking |>
+  count(
+    entity_type,
+    name = "frames",
+    sort = TRUE
+  )
+
+entity_counts
+```
+
+## Validating player and results
+
+```{r key-columns}
+required_player_columns <- c(
+  "nfl_id",
+  "display_name",
+  "draft_year",
+  "nfl_position"
+)
+
+required_result_columns <- c(
+  "draft_year",
+  "nfl_id",
+  "combine_position",
+  "forty",
+  "ten_yd_split"
+)
+
+missing_player_columns <- setdiff(
+  required_player_columns,
+  names(players)
+)
+
+missing_result_columns <- setdiff(
+  required_result_columns,
+  names(combine_results)
+)
+
+if (length(missing_player_columns) > 0L ||
+    length(missing_result_columns) > 0L) {
+  stop("Required player or results columns are missing. Review the schemas.")
+}
+```
+
+```{r check-table-keys}
+check_keys <- function(data, keys, table_name) {
+
+  missing_key <- !complete.cases(
+    data[, keys, drop = FALSE]
+  )
+
+  complete_keys <- data[
+    !missing_key,
+    keys,
+    drop = FALSE
+  ]
+
+  duplicate_key <- duplicated(complete_keys) |
+    duplicated(complete_keys, fromLast = TRUE)
+
+  tibble(
+    table = table_name,
+    rows = nrow(data),
+    candidate_key = paste(keys, collapse = ", "),
+    rows_with_missing_key = sum(missing_key),
+    rows_in_duplicate_keys = sum(duplicate_key),
+    distinct_complete_keys = nrow(unique(complete_keys))
+  )
+}
+
+key_audit <- bind_rows(
+  check_keys(
+    players,
+    keys = "nfl_id",
+    table_name = "players"
+  ),
+  check_keys(
+    combine_results,
+    keys = c("draft_year", "nfl_id"),
+    table_name = "combine_results"
+  )
+)
+
+key_audit
+```
+
+## Identify layer 40-yard recordings
+
+```{r select-forty-recordings}
+required_tracking_columns <- c(
+  "draft_year",
+  "event_id",
+  "nfl_id",
+  "entity_type",
+  "drill_name",
+  "attempt",
+  "time"
+)
+
+missing_tracking_columns <- setdiff(
+  required_tracking_columns,
+  names(combine_tracking)
+)
+
+if (length(missing_tracking_columns) > 0L) {
+  stop("Required tracking identifier columns are missing.")
+}
+
+forties <- combine_tracking |>
+  filter(
+    drill_name == "FORTY_YARD_DASH",
+    entity_type == "PLAYER"
+  )
+
+if (nrow(forties) == 0L) {
+  stop("No player 40-yard recordings matched. Review the drill labels.")
+}
+
+attempt_keys <- c(
+  "draft_year",
+  "event_id",
+  "nfl_id",
+  "entity_type",
+  "drill_name",
+  "attempt"
+)
+
+tracking_key_summary <- tibble(
+  player_forty_frames = nrow(forties),
+  frames_with_missing_attempt_key = sum(
+    !complete.cases(forties[, attempt_keys])
+  )
+)
+
+tracking_key_summary
+```
+
+## Check player and results overlap
+
+```{r check-overlap}
+tracked_players <- forties |>
+  distinct(draft_year, nfl_id)
+
+unmatched_players <- tracked_players |>
+  anti_join(
+    players,
+    by = "nfl_id"
+  )
+
+unmatched_results <- tracked_players |>
+  anti_join(
+    combine_results,
+    by = c("draft_year", "nfl_id")
+  )
+
+overlap_summary <- tibble(
+  tracked_player_years = nrow(tracked_players),
+  unmatched_player_rows = nrow(unmatched_players),
+  unmatched_result_rows = nrow(unmatched_results)
+)
+
+overlap_summary
+unmatched_players
+unmatched_results
+
+key_audit
+tracking_key_summary
+```
+
+## Recording counts and timestamp quality
+
+```{r counts-and-timestamp}
+forties <- forties |>
+  mutate(
+    timestamp = as.POSIXct(
+      time,
+      format = "%Y-%m-%dT%H:%M:%OS",
+      tz = "UTC"
+    )
+  )
+
+timestamp_summary <- forties |>
+  summarise(
+    frames = n(),
+    missing_raw_time = sum(is.na(time)),
+    invalid_or_missing_timestamp = sum(is.na(timestamp))
+  )
+
+timestamp_summary
+```
+
+```{r recording-audit}
+audit_recording <- function(data) {
+  valid_times <- sort(
+    data$timestamp[!is.na(data$timestamp)]
+  )
+  
+  duplicate_rows <- sum(
+    duplicated(valid_times) |
+      duplicated(valid_times, fromLast = TRUE)
+  )
+  
+  elapsed_s <- if (length(valid_times) > 0L) {
+    round(
+      as.numeric(
+        difftime(
+          valid_times,
+          valid_times[1],
+          units = "secs"
+        )
+      ),
+      digits = 6
+    )
+  } else {
+    numeric(0)
+  }
+  
+  steps_s <- diff(elapsed_s)
+  
+  tibble(
+    frames = nrow(data),
+    invalid_time_frames = sum(is.na(data$timestamp)),
+    duplicate_timestamp_rows = duplicate_rows,
+    observed_duration_s = if (length(elapsed_s) > 0L) {
+      max(elapsed_s)
+    } else {
+      NA_real_
+    },
+    median_step_s = if (length(steps_s) > 0L) {
+      median(steps_s)
+    } else {
+      NA_real_
+    },
+    max_step_s = if (length(steps_s) > 0L) {
+      max(steps_s)
+    } else {
+      NA_real_
+    },
+    intervals_outside_0_1_s = sum(
+      abs(steps_s - 0.1) > 0.001
+    )
+  )
+}
+
+recording_audit <- forties |>
+  group_by(across(all_of(attempt_keys))) |>
+  group_modify(~ audit_recording(.x)) |>
+  ungroup()
+
+recording_summary <- recording_audit |>
+  summarise(
+    recordings = n(),
+    frames = sum(frames),
+    invalid_time_frames = sum(invalid_time_frames),
+    duplicate_timestamp_rows = sum(duplicate_timestamp_rows),
+    recordings_with_irregular_intervals = sum(
+      intervals_outside_0_1_s > 0L
+    ),
+    recordings_without_time_intervals = sum(
+      is.na(median_step_s)
+    ),
+    median_observed_duration_s = median(
+      observed_duration_s,
+      na.rm = TRUE
+    ),
+    longest_observed_duration_s = max(
+      observed_duration_s,
+      na.rm = TRUE
+    )
+)
+
+recording_summary
+```
+
+```{r recordings-per-player}
+recordings_per_player <- recording_audit |>
+  count(
+    draft_year,
+    nfl_id,
+    name = "recordings"
+  )
+
+recordings_per_player |>
+  count(
+    recordings,
+    name = "players"
+  )
+```
+
+```{r inspect-long-recordings}
+recording_audit |>
+  arrange(desc(observed_duration_s)) |>
+  select(
+    draft_year,
+    nfl_id,
+    event_id,
+    attempt,
+    frames,
+    observed_duration_s,
+    median_step_s,
+    max_step_s
+  ) |>
+  head(10)
+```
+
+## Numeric quality
+
+```{r numeric-measurement-audit}
+measurement_columns <- c("x", "y", "s", "a")
+
+missing_columns <- setdiff(
+  measurement_columns,
+  names(forties)
+)
+
+if (length(missing_columns) > 0L) {
+  stop("Expected tracking measurement columns are missing.")
+}
+
+audit_numeric_column <- function(column_name) {
+
+  raw_values <- forties[[column_name]]
+
+  numeric_values <- suppressWarnings(
+    as.numeric(raw_values)
+  )
+
+  finite_values <- numeric_values[
+    is.finite(numeric_values)
+  ]
+
+  tibble(
+    column = column_name,
+    frames = length(raw_values),
+    missing_raw_values = sum(is.na(raw_values)),
+    unparseable_values = sum(
+      !is.na(raw_values) & is.na(numeric_values)
+    ),
+    infinite_values = sum(is.infinite(numeric_values)),
+    negative_values = sum(
+      numeric_values < 0,
+      na.rm = TRUE
+    ),
+    minimum_finite_value = if (length(finite_values) > 0L) {
+      min(finite_values)
+    } else {
+      NA_real_
+    },
+    maximum_finite_value = if (length(finite_values) > 0L) {
+      max(finite_values)
+    } else {
+      NA_real_
+    }
+  )
+}
+
+numeric_audit <- bind_rows(
+  lapply(measurement_columns, audit_numeric_column)
+)
+
+print(numeric_audit, width = Inf)
+```
+
+## Player metadata and position coverage
+
+```{r verify-join-readiness}
+if (any(key_audit$rows_with_missing_key > 0L) ||
+    any(key_audit$rows_in_duplicate_keys > 0L)) {
+  stop("Resolve metadata key problems before joining.")
+}
+
+if (nrow(unmatched_players) > 0L ||
+    nrow(unmatched_results) > 0L) {
+  stop("Resolve unmatched tracking players before joining.")
+}
+```
+
+```{r player-roster}
+player_roster <- recordings_per_player |>
+  left_join(
+    combine_results |>
+      select(
+        draft_year,
+        nfl_id,
+        combine_position,
+        forty,
+        ten_yd_split
+      ),
+    by = c("draft_year", "nfl_id"),
+    relationship = "one-to-one"
+  ) |>
+  left_join(
+    players |>
+      select(
+        nfl_id,
+        display_name,
+        nfl_position
+      ),
+    by = "nfl_id",
+    relationship = "many-to-one"
+  )
+
+if (nrow(player_roster) != nrow(recordings_per_player)) {
+  stop("The joins changed the number of player-year rows.")
+}
+
+player_roster |>
+  select(
+    display_name,
+    draft_year,
+    combine_position,
+    nfl_position,
+    recordings,
+    forty,
+    ten_yd_split
+  ) |>
+  head(10)
+```
+
+```{r metadata-completeness}
+metadata_completeness <- player_roster |>
+  summarise(
+    player_years = n(),
+    missing_names = sum(is.na(display_name)),
+    missing_combine_positions = sum(is.na(combine_position)),
+    missing_nfl_positions = sum(is.na(nfl_position)),
+    missing_official_forty = sum(is.na(forty)),
+    missing_ten_yard_split = sum(is.na(ten_yd_split))
+  )
+
+metadata_completeness
+```
+
+```{r position-coverages}
+position_coverage <- player_roster |>
+  group_by(combine_position) |>
+  summarise(
+    players = n(),
+    total_recordings = sum(recordings),
+    players_with_one_recording = sum(recordings == 1L),
+    players_with_two_recordings = sum(recordings == 2L),
+    .groups = "drop"
+  )
+
+position_coverage
+```
+
+```{r position-year-coverage}
+position_year_coverage <- player_roster |>
+  group_by(combine_position, draft_year) |>
+  summarise(
+    players = n(),
+    total_recordings = sum(recordings),
+    players_with_one_recording = sum(recordings == 1L),
+    players_with_two_recordings = sum(recordings == 2L),
+    .groups = "drop"
+  ) |>
+  arrange(combine_position, draft_year)
+
+print(position_year_coverage, n = Inf)
+```
+
+## Audit conclusions
+
+The initial audit found complete, unique metadata keys and complete tracking attempt identifiers. All tracked players matched the player and Combine results tables.
+
+The player 40-yard data contain 41,500 frames across 793 recordings and 418 player-year combinations. Timestamp checks found no invalid times, duplicate timestamps within recordings, or intervals outside the expected 0.1-second spacing.
+
+There are 375 players with two recordings and 43 with one. All inspected tracking measurements are finite and readable, and the joined roster has no missing names, positions, official 40 times, or 10-yard splits.
+
+Physical units, the supplied acceleration definition, physical launch and finish coverage, and official-result mapping to individual recordings remain unresolved.
+
+## Save the audit handoff
+
+```{r save-audit}
+AUDIT_DIR <- file.path(
+  ROOT,
+  "outputs",
+  "r_restart",
+  "01_audit"
+)
+
+dir.create(
+  AUDIT_DIR,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+audit_tables <- list(
+  key_audit = key_audit,
+  tracking_key_summary = tracking_key_summary,
+  overlap_summary = overlap_summary,
+  timestamp_summary = timestamp_summary,
+  recording_summary = recording_summary,
+  recording_audit = recording_audit,
+  recordings_per_player = recordings_per_player,
+  numeric_audit = numeric_audit,
+  metadata_completeness = metadata_completeness,
+  position_coverage = position_coverage,
+  position_year_coverage = position_year_coverage
+)
+
+for (table_name in names(audit_tables)) {
+  write_csv(
+    audit_tables[[table_name]],
+    file.path(
+      AUDIT_DIR,
+      paste0(table_name, ".csv")
+    )
+  )
+}
+
+audit_handoff <- list(
+  forties = forties,
+  player_roster = player_roster,
+  attempt_keys = attempt_keys,
+  audit_tables = audit_tables,
+  source_md5 = tools::md5sum(
+    file.path(data_dir, required_files)
+  )
+)
+
+saveRDS(
+  audit_handoff,
+  file.path(AUDIT_DIR, "audit_handoff.rds")
+)
+
+writeLines(
+  capture.output(sessionInfo()),
+  file.path(AUDIT_DIR, "session_info.txt")
+)
+
+cat("Audit saved to:", AUDIT_DIR, "\n")
+```
+
+
+

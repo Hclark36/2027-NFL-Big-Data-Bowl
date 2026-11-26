@@ -1,0 +1,1914 @@
+---
+title: "05 - NFL translation"
+author: "Hunter Clark"
+output: html_document
+---
+
+This notebook evaluates whether a Combine speed-building measurement adds information about a defined NFL movement outcome.
+
+The working question: Does Combine speed buildup add information about how quickly receivers gain speed on rookie-season NFL GO routes, beyond official 40 time and 10-yard split?
+
+## Setup
+
+```{r setup, message = FALSE}
+library(dplyr)
+library(readr)
+
+ROOT <- normalizePath(getwd())
+
+while (!(dir.exists(file.path(ROOT, "analysis_r")) &&
+         dir.exists(file.path(ROOT, "data")))) {
+
+  parent <- dirname(ROOT)
+
+  if (parent == ROOT) {
+    stop("Open the project folder first.")
+  }
+
+  ROOT <- parent
+}
+
+knitr::opts_knit$set(root.dir = ROOT)
+```
+
+## Load the full Combine cohort
+
+```{r full-combine-cohort}
+handoff_path <- file.path(
+  ROOT,
+  "outputs",
+  "r_restart",
+  "03_consistency",
+  "profile_handoff.rds"
+)
+
+if (!file.exists(handoff_path)) {
+  stop("Complete and save 03_profile_consistency.Rmd first.")
+}
+
+profiles <- readRDS(handoff_path)
+
+player_roster <- profiles$player_roster
+named_intervals <- profiles$named_intervals
+
+if (anyNA(player_roster$nfl_id) ||
+    anyNA(player_roster$draft_year) ||
+    anyDuplicated(player_roster$nfl_id) > 0L) {
+  stop("Review Combine player identifiers before joining NFL records.")
+}
+
+tibble(
+  combine_players = nrow(player_roster),
+  combine_recordings = nrow(named_intervals)
+)
+```
+
+## Locate the NFL files
+
+```{r loading-data}
+existing_data_dir <- "/Users/hunterclark/Documents/New project/nfl-big-data-bowl-2027/data/kagglehub/competitions/nfl-big-data-bowl-2027/nfl-big-data-bowl-2027"
+
+if (nzchar(existing_data_dir)) {
+
+  data_dir <- normalizePath(
+    existing_data_dir,
+    mustWork = TRUE
+  )
+
+} else {
+
+  candidates <- list.files(
+    path = file.path(ROOT, "data"),
+    pattern = "^player_play[.]csv$",
+    recursive = TRUE,
+    full.names = TRUE
+  )
+
+  if (length(candidates) != 1L) {
+    stop("Set existing_data_dir to the competition folder used in Rmd 01.")
+  }
+
+  data_dir <- dirname(candidates[1])
+}
+
+required_files <- c(
+  "games.csv",
+  "player_play.csv"
+)
+
+if (!all(file.exists(file.path(data_dir, required_files)))) {
+  stop("The selected folder is missing required NFL files.")
+}
+
+data_dir
+```
+
+## Read game and player-play tables
+
+```{r load-nfl-tables, message=FALSE}
+games <- read_csv(
+  file.path(data_dir, "games.csv"),
+  col_types = cols(.default = col_character()),
+  na = c("", "NA", "<NA>")
+)
+
+player_play <- read_csv(
+  file.path(data_dir, "player_play.csv"),
+  col_types = cols(.default = col_character()),
+  na = c("", "NA", "<NA>")
+)
+
+glimpse(games)
+glimpse(player_play)
+```
+
+## Validate required columns and keys
+
+```{r check-nfl-columns}
+required_game_columns <- c(
+  "game_id",
+  "season",
+  "season_type"
+)
+
+required_play_columns <- c(
+  "game_id",
+  "play_id",
+  "nfl_id",
+  "lined_up_position",
+  "route_ran",
+  "in_motion_at_ball_snap",
+  "play_nullified_by_penalty"
+)
+
+if (length(setdiff(
+  required_game_columns,
+  names(games)
+)) > 0L) {
+  stop("Required game columns are missing.")
+}
+
+if (length(setdiff(
+  required_play_columns,
+  names(player_play)
+)) > 0L) {
+  stop("Required player-play columns are missing.")
+}
+```
+
+```{r check-nfl-keys}
+audit_keys <- function(data, keys, table_name) {
+
+  missing_key <- !complete.cases(
+    data[, keys, drop = FALSE]
+  )
+
+  complete_keys <- data[
+    !missing_key,
+    keys,
+    drop = FALSE
+  ]
+
+  duplicate_key <- duplicated(complete_keys) |
+    duplicated(complete_keys, fromLast = TRUE)
+
+  tibble(
+    table = table_name,
+    rows = nrow(data),
+    missing_key_rows = sum(missing_key),
+    duplicate_key_rows = sum(duplicate_key)
+  )
+}
+
+nfl_key_audit <- bind_rows(
+  audit_keys(
+    games,
+    keys = "game_id",
+    table_name = "games"
+  ),
+  audit_keys(
+    player_play,
+    keys = c("game_id", "play_id", "nfl_id"),
+    table_name = "player_play"
+  )
+)
+
+nfl_key_audit
+
+if (any(nfl_key_audit$missing_key_rows > 0L) ||
+    any(nfl_key_audit$duplicate_key_rows > 0L)) {
+  stop("Review NFL key problems before joining.")
+}
+```
+
+## Match the Combine cohort to NFL records
+
+```{r join-nfl-metadata}
+cohort_player_plays <- player_play |>
+  semi_join(
+    player_roster,
+    by = "nfl_id"
+  )
+
+unmatched_games <- cohort_player_plays |>
+  distinct(game_id) |>
+  anti_join(
+    games,
+    by = "game_id"
+  )
+
+if (nrow(unmatched_games) > 0L) {
+  stop("Some cohort plays have no matching game metadata.")
+}
+
+cohort_player_plays <- cohort_player_plays |>
+  left_join(
+    games |>
+      select(
+        game_id,
+        season,
+        season_type
+      ),
+    by = "game_id",
+    relationship = "many-to-one"
+  ) |>
+  left_join(
+    player_roster |>
+      select(
+        nfl_id,
+        draft_year,
+        display_name,
+        combine_position,
+        nfl_position
+      ),
+    by = "nfl_id",
+    relationship = "many-to-one"
+  )
+```
+
+## Rookie regular-season opportunities
+
+```{r rookie-regular-season}
+rookie_player_plays <- cohort_player_plays |>
+  filter(
+    season == draft_year,
+    season_type == "REG"
+  )
+
+player_opportunities <- rookie_player_plays |>
+  group_by(draft_year, nfl_id) |>
+  summarise(
+    rookie_player_plays = n(),
+
+    go_routes = sum(
+      route_ran == "GO",
+      na.rm = TRUE
+    ),
+
+    go_routes_without_motion = sum(
+      route_ran == "GO" &
+        in_motion_at_ball_snap == "FALSE",
+      na.rm = TRUE
+    ),
+
+    .groups = "drop"
+  )
+
+opportunity_roster <- player_roster |>
+  left_join(
+    player_opportunities,
+    by = c("draft_year", "nfl_id"),
+    relationship = "one-to-one"
+  ) |>
+  mutate(
+    across(
+      c(
+        rookie_player_plays,
+        go_routes,
+        go_routes_without_motion
+      ),
+      ~ coalesce(.x, 0L)
+    )
+  )
+
+nfl_coverage <- opportunity_roster |>
+  group_by(combine_position, draft_year) |>
+  summarise(
+    combine_players = n(),
+
+    players_with_rookie_rows = sum(
+      rookie_player_plays > 0L
+    ),
+
+    players_with_go_routes = sum(
+      go_routes > 0L
+    ),
+
+    players_with_nonmotion_go_routes = sum(
+      go_routes_without_motion > 0L
+    ),
+
+    nonmotion_go_routes = sum(
+      go_routes_without_motion
+    ),
+
+    .groups = "drop"
+  ) |>
+  arrange(combine_position, draft_year)
+
+print(nfl_coverage, n = Inf, width = Inf)
+```
+
+## Inspect receiver route context
+
+```{r receiver-route-labels}
+receiver_rookie_rows <- rookie_player_plays |>
+  filter(combine_position == "WR")
+
+receiver_rookie_rows |>
+  count(
+    route_ran,
+    name = "player_plays",
+    sort = TRUE
+  )
+```
+
+```{r go-route-concept}
+receiver_go_routes <- receiver_rookie_rows |>
+  filter(route_ran == "GO")
+
+receiver_go_routes |>
+  count(
+    in_motion_at_ball_snap,
+    name = "player_plays",
+    sort = TRUE
+  )
+
+receiver_go_routes |>
+  count(
+    lined_up_position,
+    name = "player_plays",
+    sort = TRUE
+  )
+
+receiver_go_routes |>
+  count(
+    play_nullified_by_penalty,
+    name = "player_plays",
+    sort = TRUE
+  )
+```
+
+These are player-play opportunity counts, not measured movement outcomes. Unknown motion values have not been interpreted as stationary, and tracking/event coverage has not yet been checked.
+
+Rookie season is defined here as the NFL season matching the recorded draft year. Combine position defines the initial cohort; NFL position and lined-up role remain available for review.
+
+## Define candidate receiver routes
+
+```{r route-eligibility}
+route_eligibility <- receiver_go_routes |>
+  mutate(
+    eligibility_status = case_when(
+      is.na(lined_up_position) ~
+        "Missing lined-up position",
+
+      !lined_up_position %in% c("WR", "SLOT_WR") ~
+        "Other lined-up role",
+
+      is.na(in_motion_at_ball_snap) ~
+        "Missing motion value",
+
+      in_motion_at_ball_snap == "TRUE" ~
+        "In motion at snap",
+
+      in_motion_at_ball_snap != "FALSE" ~
+        "Unrecognized motion value",
+
+      is.na(play_nullified_by_penalty) ~
+        "Missing penalty status",
+
+      play_nullified_by_penalty != "N" ~
+        "Play nullified or unrecognized penalty status",
+
+      TRUE ~
+        "Candidate route"
+    )
+  )
+
+eligibility_summary <- route_eligibility |>
+  count(
+    eligibility_status,
+    name = "player_plays",
+    sort = TRUE
+  )
+
+eligibility_summary
+
+candidate_routes <- route_eligibility |>
+  filter(
+    eligibility_status == "Candidate route"
+  )
+
+if (nrow(candidate_routes) == 0L) {
+  stop("No routes meet the candidate definition.")
+}
+
+if (anyDuplicated(
+  candidate_routes[, c("game_id", "play_id", "nfl_id")]
+) > 0L) {
+  stop("Candidate route keys are not unique.")
+}
+```
+
+## Candidate route coverage
+
+```{r candidate-route-coverage}
+candidate_counts <- candidate_routes |>
+  count(
+    draft_year,
+    nfl_id,
+    name = "candidate_route_count"
+  )
+
+candidate_player_coverage <- player_roster |>
+  filter(combine_position == "WR") |>
+  left_join(
+    candidate_counts,
+    by = c("draft_year", "nfl_id"),
+    relationship = "one-to-one"
+  ) |>
+  mutate(
+    candidate_route_count = coalesce(
+      candidate_route_count,
+      0L
+    )
+  )
+
+candidate_coverage <- candidate_player_coverage |>
+  group_by(draft_year) |>
+  summarise(
+    combine_players = n(),
+
+    players_with_candidate_routes = sum(
+      candidate_route_count > 0L
+    ),
+
+    candidate_player_plays = sum(
+      candidate_route_count
+    ),
+
+    .groups = "drop"
+  )
+
+candidate_coverage
+```
+
+Candidate routes meet the play-context definition but do not yet have verified tracking or movement outcomes. Eligibility statuses record the first failed rule in the stated order.
+
+## Locate season tracking files
+
+```{r locate-tracking-files}
+tracking_keys <- c(
+  "game_id",
+  "play_id",
+  "nfl_id"
+)
+
+tracking_files <- tibble(
+  season = sort(unique(candidate_routes$season))
+) |>
+  mutate(
+    file = file.path(
+      data_dir,
+      paste0("game_tracking_", season, ".csv")
+    ),
+    exists = file.exists(file)
+  )
+
+tracking_files
+
+if (any(!tracking_files$exists)) {
+  stop("A required season tracking file is missing.")
+}
+```
+
+## Read matching tracking frames in chunks
+
+```{r tracking-frame-in-chunks}
+read_candidate_tracking <- function(
+    file,
+    route_keys,
+    source_season,
+    chunk_size = 100000L) {
+
+  required_columns <- c(
+    "game_id", "play_id", "nfl_id",
+    "time", "x", "y", "s", "event"
+  )
+
+  header <- names(
+    read_csv(
+      file,
+      n_max = 0,
+      col_types = cols(.default = col_character()),
+      show_col_types = FALSE
+    )
+  )
+
+  if (length(setdiff(required_columns, header)) > 0L) {
+    stop("Required tracking columns are missing.")
+  }
+
+  matched_chunks <- list()
+  rows_scanned <- 0
+
+  callback <- SideEffectChunkCallback$new(
+    function(chunk, position) {
+
+      if (nrow(problems(chunk)) > 0L) {
+        stop("CSV parsing problems found. Review the tracking file.")
+      }
+
+      rows_scanned <<- rows_scanned + nrow(chunk)
+
+      matched <- chunk |>
+        semi_join(
+          route_keys,
+          by = c("game_id", "play_id", "nfl_id")
+        )
+
+      if (nrow(matched) > 0L) {
+        matched$tracking_file_season <- source_season
+        matched_chunks[[length(matched_chunks) + 1L]] <<- matched
+      }
+    }
+  )
+
+  read_csv_chunked(
+    file,
+    callback = callback,
+    chunk_size = chunk_size,
+    col_types = cols_only(
+      game_id = col_character(),
+      play_id = col_character(),
+      nfl_id = col_character(),
+      time = col_character(),
+      x = col_character(),
+      y = col_character(),
+      s = col_character(),
+      event = col_character()
+    ),
+    na = c("", "NA", "<NA>"),
+    progress = FALSE,
+    show_col_types = FALSE
+  )
+
+  frames <- bind_rows(matched_chunks)
+
+  list(
+    frames = frames,
+    summary = tibble(
+      season = source_season,
+      rows_scanned = rows_scanned,
+      matched_frames = nrow(frames)
+    )
+  )
+}
+```
+
+```{r retrieve-candidate-tracking}
+tracking_results <- lapply(
+  seq_len(nrow(tracking_files)),
+  function(i) {
+
+    season_value <- tracking_files$season[i]
+
+    season_route_keys <- candidate_routes |>
+      filter(season == season_value) |>
+      distinct(
+        game_id,
+        play_id,
+        nfl_id
+      )
+
+    message("Reading tracking for season ", season_value)
+
+    read_candidate_tracking(
+      file = tracking_files$file[i],
+      route_keys = season_route_keys,
+      source_season = season_value
+    )
+  }
+)
+
+matched_tracking <- bind_rows(
+  lapply(
+    tracking_results,
+    function(result) result$frames
+  )
+)
+
+tracking_read_summary <- bind_rows(
+  lapply(
+    tracking_results,
+    function(result) result$summary
+  )
+)
+
+tracking_read_summary
+
+if (nrow(matched_tracking) == 0L) {
+  stop("No candidate tracking frames matched. Review identifiers and files.")
+}
+```
+
+## Check tracking coverage
+
+```{r checking}
+matched_frame_counts <- matched_tracking |>
+  count(
+    game_id,
+    play_id,
+    nfl_id,
+    name = "tracking_frames"
+  )
+
+route_tracking_coverage <- candidate_routes |>
+  select(
+    draft_year,
+    all_of(tracking_keys)
+  ) |>
+  left_join(
+    matched_frame_counts,
+    by = tracking_keys,
+    relationship = "one-to-one"
+  ) |>
+  mutate(
+    tracking_frames = coalesce(
+      tracking_frames,
+      0L
+    )
+  )
+
+tracking_coverage_summary <- route_tracking_coverage |>
+  group_by(draft_year) |>
+  summarise(
+    candidate_routes = n(),
+    routes_with_tracking = sum(tracking_frames > 0L),
+    routes_without_tracking = sum(tracking_frames == 0L),
+    .groups = "drop"
+  )
+
+tracking_coverage_summary
+```
+
+```{r matched-event-labels}
+matched_tracking |>
+  count(
+    event,
+    name = "frames",
+    sort = TRUE
+  )
+```
+
+## Validate tracking timestamps and speed
+
+```{r parse-nfl-tracking}
+matched_tracking <- matched_tracking |>
+  mutate(
+    timestamp = as.POSIXct(
+      time,
+      format = "%Y-%m-%dT%H:%M:%OS",
+      tz = "UTC"
+    ),
+    speed_raw = suppressWarnings(
+      as.numeric(s)
+    )
+  )
+
+matched_tracking |>
+  count(
+    event,
+    name = "frames",
+    sort = TRUE
+  )
+```
+
+## Audit each candidate route
+
+```{r route-tracking-audit}
+audit_route_tracking <- function(data) {
+  valid_times <- data$timestamp[
+    !is.na(data$timestamp)
+  ]
+
+  duplicate_rows <- sum(
+    duplicated(valid_times) |
+      duplicated(valid_times, fromLast = TRUE)
+  )
+
+  ordered_times <- sort(valid_times)
+
+  elapsed_s <- if (length(ordered_times) > 0L) {
+    round(
+      as.numeric(
+        difftime(
+          ordered_times,
+          ordered_times[1],
+          units = "secs"
+        )
+      ),
+      digits = 6
+    )
+  } else {
+    numeric(0)
+  }
+
+
+  steps_s <- diff(elapsed_s)
+
+  snap_rows <- which(
+      data$event == "ball_snap"
+    )
+
+    pass_rows <- which(
+      data$event == "pass_forward"
+    )
+
+    snap_to_pass_s <- NA_real_
+
+  if (length(snap_rows) == 1L &&
+      length(pass_rows) == 1L &&
+      !is.na(data$timestamp[snap_rows]) &&
+      !is.na(data$timestamp[pass_rows])) {
+
+    snap_to_pass_s <- as.numeric(
+      difftime(
+        data$timestamp[pass_rows],
+        data$timestamp[snap_rows],
+        units = "secs"
+      )
+    )
+  }
+  tibble(
+    tracking_frames = nrow(data),
+
+    invalid_timestamp_frames = sum(
+      is.na(data$timestamp)
+    ),
+
+    duplicate_timestamp_rows = duplicate_rows,
+
+    invalid_speed_frames = sum(
+      !is.finite(data$speed_raw)
+    ),
+
+    negative_speed_frames = sum(
+      data$speed_raw < 0,
+      na.rm = TRUE
+    ),
+
+    intervals_outside_0_1_s = sum(
+      abs(steps_s - 0.1) > 0.001
+    ),
+
+    snap_events = length(snap_rows),
+
+    pass_events = length(pass_rows),
+
+    snap_to_pass_s = snap_to_pass_s
+  )
+}
+```
+
+```{r audit-candidate-tracking}
+tracking_audit_by_route <- matched_tracking |>
+  group_by(across(all_of(tracking_keys))) |>
+  group_modify(
+    ~ audit_route_tracking(.x)
+  ) |>
+  ungroup()
+
+route_tracking_audit <- candidate_routes |>
+  select(
+    draft_year,
+    all_of(tracking_keys),
+    display_name,
+    lined_up_position
+  ) |>
+  left_join(
+    tracking_audit_by_route,
+    by = tracking_keys,
+    relationship = "one-to-one"
+  )
+
+if (anyNA(route_tracking_audit$tracking_frames)) {
+  stop("A candidate route is missing its tracking audit.")
+}
+
+tracking_quality_summary <- route_tracking_audit |>
+  group_by(draft_year) |>
+  summarise(
+    candidate_routes = n(),
+
+    routes_with_invalid_timestamps = sum(
+      invalid_timestamp_frames > 0L
+    ),
+
+    routes_with_duplicate_timestamps = sum(
+      duplicate_timestamp_rows > 0L
+    ),
+
+    routes_with_invalid_speed = sum(
+      invalid_speed_frames > 0L
+    ),
+
+    routes_with_negative_speed = sum(
+      negative_speed_frames > 0L
+    ),
+
+    routes_with_irregular_intervals = sum(
+      intervals_outside_0_1_s > 0L
+    ),
+
+    .groups = "drop"
+  )
+
+print(tracking_quality_summary, width = Inf)
+```
+
+## Event coverage
+
+```{r route-event-coverage}
+event_coverage <- route_tracking_audit |>
+  count(
+    snap_events,
+    pass_events,
+    name = "candidate_routes"
+  )
+
+event_coverage
+
+pass_timing_summary <- route_tracking_audit |>
+  filter(
+    snap_events == 1L,
+    pass_events == 1L,
+    is.finite(snap_to_pass_s)
+  ) |>
+  summarise(
+    routes = n(),
+    passes_before_one_second = sum(
+      snap_to_pass_s < 1 - 1e-6
+    ),
+    passes_at_or_after_one_second = sum(
+      snap_to_pass_s >= 1 - 1e-6
+    ),
+    minimum_snap_to_pass_s = min(snap_to_pass_s),
+    median_snap_to_pass_s = median(snap_to_pass_s),
+    maximum_snap_to_pass_s = max(snap_to_pass_s)
+  )
+
+print(pass_timing_summary, width = Inf)
+```
+
+## Measure first-second speed gain
+
+```{r movement-outcome-function}
+measure_first_second_gain <- function(data) {
+  
+  data <- data |>
+    arrange(timestamp)
+  
+  unavailable <- function(reason) {
+    tibble(
+      outcome_status = reason,
+      snap_speed_raw = NA_real_,
+      speed_at_one_second_raw = NA_real_,
+      first_second_speed_gain_raw = NA_real_,
+      snap_to_pass_s = NA_real_
+    )
+  }
+  
+  if (anyNA(data$timestamp) ||
+      any(!is.finite(data$speed_raw)) ||
+      any(data$speed_raw < 0)) {
+    return(unavailable("Invalid tracking values"))
+  }
+  
+  if (anyDuplicated(data$timestamp) > 0L) {
+    return(unavailable("Duplicate timestamps"))
+  }
+  
+  snap_rows <- which(data$event == "ball_snap")
+  pass_rows <- which(data$event == "pass_forward")
+  
+  if (length(snap_rows) != 1L) {
+    return(unavailable("Missing or multiple snap events"))
+  }
+
+  if (length(pass_rows) != 1L) {
+    return(unavailable("Missing or multiple pass events"))
+  }
+  
+  time_from_snap_s <- round(
+    as.numeric(
+      difftime(
+        data$timestamp,
+        data$timestamp[snap_rows],
+        units = "secs"
+      )
+    ),
+    digits = 6
+  )
+  
+  pass_time_s <- time_from_snap_s[pass_rows]
+  
+  if (pass_time_s < 1 - 1e-6) {
+    return(unavailable("Pass before one-second horizon"))
+  }
+
+  one_second_rows <- which(
+    abs(time_from_snap_s - 1) <= 1e-6
+  )
+
+  if (length(one_second_rows) != 1L) {
+    return(unavailable("No unique observed one-second frame"))
+  }
+
+  window_rows <- which(
+    time_from_snap_s >= 0 &
+      time_from_snap_s <= 1
+  )
+
+  window_steps <- diff(
+    time_from_snap_s[window_rows]
+  )
+
+  if (length(window_rows) != 11L ||
+      any(abs(window_steps - 0.1) > 0.001)) {
+    return(unavailable("Incomplete first-second tracking"))
+  }
+
+  snap_speed <- data$speed_raw[snap_rows]
+  one_second_speed <- data$speed_raw[one_second_rows]
+
+  tibble(
+    outcome_status = "Measured",
+    snap_speed_raw = snap_speed,
+    speed_at_one_second_raw = one_second_speed,
+    first_second_speed_gain_raw =
+      one_second_speed - snap_speed,
+    snap_to_pass_s = pass_time_s
+  )
+}
+```
+
+```{r calculating-route-outcomes}
+movement_by_route <- matched_tracking |>
+  group_by(across(all_of(tracking_keys))) |>
+  group_modify(
+    ~ measure_first_second_gain(.x)
+  ) |>
+  ungroup()
+
+route_outcomes <- candidate_routes |>
+  left_join(
+    movement_by_route,
+    by = tracking_keys,
+    relationship = "one-to-one"
+  )
+
+if (anyNA(route_outcomes$outcome_status)) {
+  stop("A candidate route is missing its outcome audit.")
+}
+
+outcome_status_summary <- route_outcomes |>
+  count(
+    draft_year,
+    outcome_status,
+    name = "routes"
+  )
+
+print(outcome_status_summary, n = Inf)
+```
+
+## Summarized measured movement
+
+```{r summarized-measured-movement}
+measured_routes <- route_outcomes |>
+  filter(outcome_status == "Measured")
+
+if (nrow(measured_routes) == 0L) {
+  stop("No routes have measured movement outcomes.")
+}
+
+movement_summary <- measured_routes |>
+  summarise(
+    measured_routes = n(),
+
+    median_snap_speed_raw = median(
+      snap_speed_raw
+    ),
+
+    median_one_second_speed_raw = median(
+      speed_at_one_second_raw
+    ),
+
+    mean_speed_gain_raw = mean(
+      first_second_speed_gain_raw
+    ),
+
+    median_speed_gain_raw = median(
+      first_second_speed_gain_raw
+    ),
+
+    minimum_speed_gain_raw = min(
+      first_second_speed_gain_raw
+    ),
+
+    maximum_speed_gain_raw = max(
+      first_second_speed_gain_raw
+    ),
+
+    routes_with_negative_gain = sum(
+      first_second_speed_gain_raw < 0
+    )
+  )
+
+print(movement_summary, width = Inf)
+```
+
+## Summarize NFL movement by player
+
+```{r player-movement}
+player_nfl_movement <- measured_routes |>
+  group_by(draft_year, nfl_id) |>
+  summarise(
+    measured_route_count = n(),
+
+    mean_nfl_speed_gain_raw = mean(
+      first_second_speed_gain_raw
+    ),
+
+    sd_nfl_speed_gain_raw = sd(
+      first_second_speed_gain_raw
+    ),
+
+    mean_snap_speed_raw = mean(
+      snap_speed_raw
+    ),
+
+    slot_route_share = mean(
+      lined_up_position == "SLOT_WR"
+    ),
+
+    .groups = "drop"
+  )
+```
+
+## Summarize Combine intervals by player
+
+```{r player-combine-intervals}
+player_combine_intervals <- named_intervals |>
+  group_by(draft_year, nfl_id) |>
+  summarise(
+    combine_recording_count = n(),
+
+    measured_combine_intervals = sum(
+      status == "Measured"
+  ),
+  
+  mean_combine_interval_s = if (
+    any(status == "Measured")
+  ) {
+    mean(interval_s[status == "Measured"])
+  } else {
+    NA_real_
+  },
+  
+  combine_interval_range_s = if (
+      sum(status == "Measured") >= 2L
+    ) {
+      max(interval_s[status == "Measured"]) -
+        min(interval_s[status == "Measured"])
+    } else {
+      NA_real_
+    },
+
+    .groups = "drop"
+  )
+```
+
+## Define the working modeling cohort
+
+```{r working-model-cohort}
+min_routes <- 10L
+
+analysis_roster <- player_roster |>
+  filter(combine_position == "WR") |>
+  mutate(
+    official_forty_s = suppressWarnings(
+      as.numeric(forty)
+    ),
+    official_ten_split_s = suppressWarnings(
+      as.numeric(ten_yd_split)
+    )
+  ) |>
+  left_join(
+    player_combine_intervals,
+    by = c("draft_year", "nfl_id"),
+    relationship = "one-to-one"
+  ) |>
+  left_join(
+    player_nfl_movement,
+    by = c("draft_year", "nfl_id"),
+    relationship = "one-to-one"
+  ) |>
+  mutate(
+    measured_route_count = coalesce(
+      measured_route_count,
+      0L
+    ),
+
+    analysis_status = case_when(
+      measured_route_count == 0L ~
+        "No measured NFL routes",
+
+      measured_route_count < min_routes ~
+        "Below NFL route threshold",
+
+      is.na(measured_combine_intervals) |
+        measured_combine_intervals < 1L |
+        !is.finite(mean_combine_interval_s) ~
+        "No measured Combine interval",
+
+      !is.finite(official_forty_s) |
+        official_forty_s <= 0 |
+        !is.finite(official_ten_split_s) |
+        official_ten_split_s <= 0 ~
+        "Invalid official testing result",
+
+      !is.finite(mean_nfl_speed_gain_raw) ~
+        "Invalid NFL movement summary",
+
+      TRUE ~
+        "Eligible"
+    )
+  )
+
+modeling_eligibility <- analysis_roster |>
+  count(
+    draft_year,
+    analysis_status,
+    name = "players"
+  )
+
+print(modeling_eligibility, n = Inf)
+```
+
+```{r modeling-coverage}
+modeling_coverage <- analysis_roster |>
+  group_by(draft_year) |>
+  summarise(
+    combine_players = n(),
+
+    players_with_measured_routes = sum(
+      measured_route_count > 0L
+    ),
+
+    players_with_at_least_10_routes = sum(
+      measured_route_count >= 10L
+    ),
+
+    players_with_at_least_20_routes = sum(
+      measured_route_count >= 20L
+    ),
+
+    main_analysis_players = sum(
+      analysis_status == "Eligible"
+    ),
+
+    eligible_with_two_combine_intervals = sum(
+      analysis_status == "Eligible" &
+        measured_combine_intervals >= 2L,
+      na.rm = TRUE
+    ),
+
+    .groups = "drop"
+  )
+
+print(modeling_coverage, width = Inf)
+
+modeling_data <- analysis_roster |>
+  filter(analysis_status == "Eligible")
+```
+
+## Define the model comparison
+
+The response is player-level mean first-second speed gain on eligible rookie GO routes.
+
+The primary comparison adds the mean Combine 3-7 speed interval to a baseline containing official 40, 10-yard split, and draft year.
+
+Validation holds out players within each draft year. It evaluates additional players from represented classes, not forecasting a new draft class.
+
+```{r preparing-model-input}
+model_input <- modeling_data |>
+  select(
+    nfl_id,
+    draft_year,
+    official_forty_s,
+    official_ten_split_s,
+    mean_combine_interval_s,
+    mean_nfl_speed_gain_raw
+  ) |>
+  mutate(
+    draft_year = factor(draft_year)
+  ) |>
+  arrange(draft_year, nfl_id)
+
+if (anyDuplicated(model_input$nfl_id) > 0L) {
+  stop("Each player must have exactly one modeling row.")
+}
+
+numeric_columns <- c(
+  "official_forty_s",
+  "official_ten_split_s",
+  "mean_combine_interval_s",
+  "mean_nfl_speed_gain_raw"
+)
+
+if (anyNA(model_input) ||
+    any(!is.finite(as.matrix(model_input[, numeric_columns])))) {
+  stop("Missing or nonfinite model inputs.")
+}
+
+model_formulas <- list(
+  "Year reference" =
+    mean_nfl_speed_gain_raw ~ draft_year,
+
+  "Baseline" =
+    mean_nfl_speed_gain_raw ~
+      official_forty_s +
+      official_ten_split_s +
+      draft_year,
+
+  "Added interval" =
+    mean_nfl_speed_gain_raw ~
+      official_forty_s +
+      official_ten_split_s +
+      draft_year +
+      mean_combine_interval_s
+)
+```
+
+## Repeated player-level cross-validation
+
+```{r cross-level-validation}
+n_folds <- 5L
+n_repeats <- 20L
+cv_seed <- 2027L
+
+if (any(table(model_input$draft_year) < n_folds)) {
+  stop("A draft-year group is too small for the planned folds.")
+}
+
+set.seed(cv_seed)
+
+prediction_results <- list()
+
+for (repeat_id in seq_len(n_repeats)) {
+
+  assigned_data <- model_input |>
+    group_by(draft_year) |>
+    mutate(
+      fold_id = sample(
+        rep(
+          seq_len(n_folds),
+          length.out = n()
+        )
+      )
+    ) |>
+    ungroup()
+
+  for (fold in seq_len(n_folds)) {
+
+    training_data <- assigned_data |>
+      filter(fold_id != fold)
+
+    testing_data <- assigned_data |>
+      filter(fold_id == fold)
+
+    if (any(
+      training_data$nfl_id %in% testing_data$nfl_id
+    )) {
+      stop("A player appears in both training and testing.")
+    }
+
+    for (model_name in names(model_formulas)) {
+
+      fit <- lm(
+        formula = model_formulas[[model_name]],
+        data = training_data
+      )
+
+      if (fit$rank < ncol(model.matrix(fit))) {
+        stop("A training model has redundant predictors. Review inputs.")
+      }
+
+      predictions <- as.numeric(
+        predict(
+          fit,
+          newdata = testing_data
+        )
+      )
+
+      if (any(!is.finite(predictions))) {
+        stop("A model produced nonfinite predictions.")
+      }
+
+      prediction_results[[length(prediction_results) + 1L]] <-
+        tibble(
+          nfl_id = testing_data$nfl_id,
+          draft_year = testing_data$draft_year,
+          repeat_id = repeat_id,
+          fold_id = fold,
+          model = model_name,
+          observed = testing_data$mean_nfl_speed_gain_raw,
+          predicted = predictions
+        )
+    }
+  }
+}
+
+held_out_predictions <- bind_rows(
+  prediction_results
+)
+```
+
+## Check prediction coverage
+
+```{r prediction-coverage}
+prediction_counts <- held_out_predictions |>
+  count(
+    nfl_id,
+    repeat_id,
+    model,
+    name = "predictions"
+  )
+
+expected_predictions <- nrow(model_input) *
+  n_repeats *
+  length(model_formulas)
+
+if (nrow(held_out_predictions) != expected_predictions ||
+    any(prediction_counts$predictions != 1L)) {
+  stop("Held-out prediction coverage is incorrect.")
+}
+```
+
+## Compare held-out prediction errors
+
+```{r comparing-model-orders}
+cv_metrics <- held_out_predictions |>
+  group_by(model) |>
+  summarise(
+    players = n_distinct(nfl_id),
+
+    rmse = sqrt(
+      mean((observed - predicted)^2)
+    ),
+
+    mae = mean(
+      abs(observed - predicted)
+    ),
+
+    .groups = "drop"
+  )
+
+print(cv_metrics, width = Inf)
+
+baseline_rmse <- cv_metrics$rmse[
+  cv_metrics$model == "Baseline"
+]
+
+expanded_rmse <- cv_metrics$rmse[
+  cv_metrics$model == "Added interval"
+]
+
+primary_model_comparison <- tibble(
+  players = nrow(model_input),
+  baseline_rmse = baseline_rmse,
+  expanded_rmse = expanded_rmse,
+  rmse_gain = baseline_rmse - expanded_rmse,
+  rmse_gain_pct =
+    100 * (baseline_rmse - expanded_rmse) / baseline_rmse
+)
+
+print(primary_model_comparison, width = Inf)
+```
+
+## Conditional uncertainty in the error difference
+
+```{r player-level-prediction-errors}
+player_prediction_errors <- held_out_predictions |>
+  group_by(draft_year, nfl_id) |>
+  summarise(
+    baseline_mse = mean(
+      (
+        observed[model == "Baseline"] -
+          predicted[model == "Baseline"]
+      )^2
+    ),
+
+    expanded_mse = mean(
+      (
+        observed[model == "Added interval"] -
+          predicted[model == "Added interval"]
+      )^2
+    ),
+
+    .groups = "drop"
+  )
+
+if (any(!is.finite(
+  as.matrix(
+    player_prediction_errors[, c("baseline_mse", "expanded_mse")]
+  )
+))) {
+  stop("Invalid player-level prediction errors.")
+}
+```
+
+```{r paired-player-bootstrap}
+bootstrap_reps <- 5000L
+bootstrap_seed <- 2028L
+
+year_indices <- split(
+  seq_len(nrow(player_prediction_errors)),
+  player_prediction_errors$draft_year,
+  drop = TRUE
+)
+
+set.seed(bootstrap_seed)
+
+bootstrap_rmse_gain <- replicate(
+  bootstrap_reps,
+  {
+
+    sampled_indices <- unlist(
+      lapply(
+        year_indices,
+        function(indices) {
+          indices[
+            sample.int(
+              length(indices),
+              size = length(indices),
+              replace = TRUE
+            )
+          ]
+        }
+      ),
+      use.names = FALSE
+    )
+
+    baseline_error <- sqrt(
+      mean(
+        player_prediction_errors$baseline_mse[
+          sampled_indices
+        ]
+      )
+    )
+
+    expanded_error <- sqrt(
+      mean(
+        player_prediction_errors$expanded_mse[
+          sampled_indices
+        ]
+      )
+    )
+
+    baseline_error - expanded_error
+  }
+)
+
+conditional_error_interval <- tibble(
+  players = nrow(player_prediction_errors),
+
+  observed_rmse_gain =
+    sqrt(mean(player_prediction_errors$baseline_mse)) -
+    sqrt(mean(player_prediction_errors$expanded_mse)),
+
+  conditional_gain_p025 = unname(
+    quantile(bootstrap_rmse_gain, 0.025)
+  ),
+
+  conditional_gain_p975 = unname(
+    quantile(bootstrap_rmse_gain, 0.975)
+  )
+)
+
+print(conditional_error_interval, width = Inf)
+```
+
+## Exposure and recording-count sensitivities
+
+```{r sensitivity-validation-function}
+evaluate_model_set <- function(
+    data,
+    formulas,
+    n_folds = 5L,
+    n_repeats = 20L,
+    seed = 2027L) {
+
+  required_variables <- unique(
+    unlist(
+      lapply(formulas, all.vars)
+    )
+  )
+
+  input <- data |>
+    select(
+      all_of(
+        unique(
+          c(
+            "nfl_id",
+            "draft_year",
+            required_variables
+          )
+        )
+      )
+    ) |>
+    mutate(
+      draft_year = factor(draft_year)
+    ) |>
+    arrange(draft_year, nfl_id)
+
+  if (anyNA(input) ||
+      anyDuplicated(input$nfl_id) > 0L ||
+      any(table(input$draft_year) < n_folds)) {
+    stop("Review sensitivity inputs or fold sizes.")
+  }
+
+  set.seed(seed)
+
+  results <- list()
+
+  for (repeat_id in seq_len(n_repeats)) {
+
+    assigned <- input |>
+      group_by(draft_year) |>
+      mutate(
+        fold_id = sample(
+          rep(
+            seq_len(n_folds),
+            length.out = n()
+          )
+        )
+      ) |>
+      ungroup()
+
+    for (fold in seq_len(n_folds)) {
+
+      train <- assigned |>
+        filter(fold_id != fold)
+
+      test <- assigned |>
+        filter(fold_id == fold)
+
+      if (any(train$nfl_id %in% test$nfl_id)) {
+        stop("Train/test player overlap.")
+      }
+
+      for (model_name in names(formulas)) {
+
+        fit <- lm(
+          formulas[[model_name]],
+          data = train
+        )
+
+        if (fit$rank < ncol(model.matrix(fit))) {
+          stop("A sensitivity model has redundant predictors.")
+        }
+
+        prediction <- as.numeric(
+          predict(fit, newdata = test)
+        )
+
+        if (any(!is.finite(prediction))) {
+          stop("Nonfinite sensitivity predictions.")
+        }
+
+        results[[length(results) + 1L]] <- tibble(
+          nfl_id = test$nfl_id,
+          draft_year = test$draft_year,
+          repeat_id = repeat_id,
+          fold_id = fold,
+          model = model_name,
+          observed = test$mean_nfl_speed_gain_raw,
+          predicted = prediction
+        )
+      }
+    }
+  }
+
+  predictions <- bind_rows(results)
+
+  coverage <- predictions |>
+    count(
+      nfl_id,
+      repeat_id,
+      model,
+      name = "prediction_count"
+    )
+
+  expected <- nrow(input) *
+    n_repeats *
+    length(formulas)
+
+  if (nrow(predictions) != expected ||
+      any(coverage$prediction_count != 1L)) {
+    stop("Incorrect sensitivity prediction coverage.")
+  }
+
+  metrics <- predictions |>
+    group_by(model) |>
+    summarise(
+      players = n_distinct(nfl_id),
+      rmse = sqrt(
+        mean((observed - predicted)^2)
+      ),
+      mae = mean(
+        abs(observed - predicted)
+      ),
+      .groups = "drop"
+    )
+
+  list(
+    metrics = metrics,
+    predictions = predictions
+  )
+}
+```
+
+```{r run-sample-sensitivities}
+sensitivity_cohorts <- list(
+  "At least 20 NFL routes" = modeling_data |>
+    filter(measured_route_count >= 20L),
+
+  "Two measured Combine intervals" = modeling_data |>
+    filter(measured_combine_intervals >= 2L)
+)
+
+sensitivity_runs <- lapply(
+  sensitivity_cohorts,
+  function(cohort) {
+    evaluate_model_set(
+      data = cohort,
+      formulas = model_formulas
+    )
+  }
+)
+```
+
+```{r summarize-sample-sensitivities}
+sensitivity_metrics <- bind_rows(
+  lapply(
+    names(sensitivity_runs),
+    function(analysis_name) {
+      sensitivity_runs[[analysis_name]]$metrics |>
+        mutate(
+          analysis = analysis_name
+        )
+    }
+  )
+)
+
+all_analysis_metrics <- bind_rows(
+  cv_metrics |>
+    mutate(analysis = "Primary: at least 10 NFL routes"),
+
+  sensitivity_metrics
+)
+
+sample_sensitivity_summary <- all_analysis_metrics |>
+  group_by(analysis) |>
+  summarise(
+    players = first(players),
+
+    baseline_rmse = rmse[
+      model == "Baseline"
+    ],
+
+    expanded_rmse = rmse[
+      model == "Added interval"
+    ],
+
+    year_reference_rmse = rmse[
+      model == "Year reference"
+    ],
+
+    rmse_gain = baseline_rmse - expanded_rmse,
+
+    .groups = "drop"
+  )
+
+print(sample_sensitivity_summary, width = Inf)
+```
+
+## Route-context sensitivity
+
+```{r context-model-formulas}
+context_formulas <- list(
+  "Year reference" =
+    mean_nfl_speed_gain_raw ~ draft_year,
+
+  "Baseline" =
+    mean_nfl_speed_gain_raw ~
+      official_forty_s +
+      official_ten_split_s +
+      draft_year +
+      mean_snap_speed_raw +
+      slot_route_share,
+
+  "Added interval" =
+    mean_nfl_speed_gain_raw ~
+      official_forty_s +
+      official_ten_split_s +
+      draft_year +
+      mean_snap_speed_raw +
+      slot_route_share +
+      mean_combine_interval_s
+)
+```
+
+```{r evaluate-context-models}
+context_run <- evaluate_model_set(
+  data = modeling_data,
+  formulas = context_formulas
+)
+
+context_metrics <- context_run$metrics
+
+print(context_metrics, width = Inf)
+
+context_baseline_rmse <- context_metrics$rmse[
+  context_metrics$model == "Baseline"
+]
+
+context_expanded_rmse <- context_metrics$rmse[
+  context_metrics$model == "Added interval"
+]
+
+context_comparison <- tibble(
+  analysis = "Route-context sensitivity",
+  players = nrow(modeling_data),
+  baseline_rmse = context_baseline_rmse,
+  expanded_rmse = context_expanded_rmse,
+  rmse_gain = context_baseline_rmse - context_expanded_rmse
+)
+
+print(context_comparison, width = Inf)
+```
+
+## NFL translation findings
+
+The primary analysis included 53 receivers with at least 10 measured rookie-season GO routes and at least one measured Combine interval.
+
+Adding the Combine 3-7 speed interval increased held-out RMSE by approximately 0.00875. The conditional paired-player bootstrap interval for RMSE improvement was approximately [-0.0135, -0.00481], favoring the baseline under that calculation.
+
+The added interval also increased error when requiring at least 20 NFL routes, requiring two measured Combine intervals, and adjusting for mean snap speed and slot-route share.
+
+The context-adjusted baseline outperformed the year-only reference. The traditional-testing baseline without those context variables did not.
+
+These results describe retrospective movement prediction within represented draft classes. They do not test peak-acceleration timing, overall route-running quality, or NFL success. Route-context adjustment remains limited, and the bootstrap conditions on fixed held-out predictions.
+
+## Save NFL translation outputs
+
+```{r save-nfl-results}
+NFL_OUTPUT_DIR <- file.path(
+  ROOT,
+  "outputs",
+  "r_restart",
+  "05_nfl_translation"
+)
+
+dir.create(
+  NFL_OUTPUT_DIR,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+final_model_metrics <- bind_rows(
+  all_analysis_metrics,
+
+  context_metrics |>
+    mutate(
+      analysis = "Route-context sensitivity"
+    )
+)
+
+nfl_tables <- list(
+  candidate_coverage = candidate_coverage,
+  outcome_status_summary = outcome_status_summary,
+  modeling_eligibility = modeling_eligibility,
+  modeling_coverage = modeling_coverage,
+  model_metrics = final_model_metrics,
+  primary_comparison = primary_model_comparison,
+  primary_conditional_interval = conditional_error_interval,
+  sample_sensitivities = sample_sensitivity_summary,
+  context_comparison = context_comparison,
+  analysis_roster = analysis_roster
+)
+
+for (table_name in names(nfl_tables)) {
+  readr::write_csv(
+    nfl_tables[[table_name]],
+    file.path(
+      NFL_OUTPUT_DIR,
+      paste0(table_name, ".csv")
+    )
+  )
+}
+
+nfl_handoff <- list(
+  tables = nfl_tables,
+
+  route_outcomes = route_outcomes,
+  route_tracking_audit = route_tracking_audit,
+  modeling_data = modeling_data,
+
+  primary_predictions = held_out_predictions,
+  primary_player_errors = player_prediction_errors,
+  sensitivity_runs = sensitivity_runs,
+  context_predictions = context_run$predictions,
+
+  model_formulas = lapply(
+    model_formulas,
+    function(formula) {
+      paste(deparse(formula), collapse = " ")
+    }
+  ),
+
+  context_formulas = lapply(
+    context_formulas,
+    function(formula) {
+      paste(deparse(formula), collapse = " ")
+    }
+  ),
+
+  definitions = list(
+    population = "Combine WR cohort; rookie regular season",
+    routes = "GO; WR or SLOT_WR alignment; explicitly no motion; not nullified",
+    outcome = "Supplied speed at one second minus supplied speed at snap",
+    timing = "Unique snap and pass events; pass at or after one second",
+    tracking = "Observed endpoints and complete 0.1-second first-second coverage",
+    primary_feature = "Mean available measured Combine 3-7 interval",
+    primary_route_threshold = min_routes,
+    validation = "20 repetitions of five-fold player validation, stratified by draft year",
+    bootstrap = "Paired players resampled within year; predictions fixed"
+  )
+)
+
+saveRDS(
+  nfl_handoff,
+  file.path(
+    NFL_OUTPUT_DIR,
+    "nfl_translation_handoff.rds"
+  )
+)
+
+writeLines(
+  capture.output(sessionInfo()),
+  file.path(NFL_OUTPUT_DIR, "session_info.txt")
+)
+
+expected_files <- c(
+  paste0(names(nfl_tables), ".csv"),
+  "nfl_translation_handoff.rds",
+  "session_info.txt"
+)
+
+save_check <- tibble(
+  file = expected_files,
+  exists = file.exists(
+    file.path(NFL_OUTPUT_DIR, expected_files)
+  ),
+  bytes = file.info(
+    file.path(NFL_OUTPUT_DIR, expected_files)
+  )$size
+)
+
+print(save_check, n = Inf)
+
+if (any(!save_check$exists) ||
+    anyNA(save_check$bytes) ||
+    any(save_check$bytes <= 0)) {
+  stop("An NFL translation output is missing or empty.")
+}
+
+cat("NFL translation saved to:", NFL_OUTPUT_DIR, "\n")
+```
+
+
+
+

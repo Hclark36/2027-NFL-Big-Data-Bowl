@@ -1,0 +1,9 @@
+display_name,attempt,peak_acceleration_raw_per_s,peak_time_from_recording_start_s,peak_time_from_speed_crossing_s,peak_type
+Cedric Tillman,2,6.52380952357143,0.4,0.09408866995365095,Interior peak
+Cedric Tillman,4,6.724999999642856,0.3,-0.020388349504665892,Boundary peak
+Elijah Higgins,1,6.0154761910714285,0.6,0.1519553072335445,Interior peak
+Elijah Higgins,3,6.944047618928569,0.3,-0.023786407741540228,Boundary peak
+Joseph Ngata,1,6.384523809642861,0.5,0.05076142132056999,Interior peak
+Joseph Ngata,2,6.803571428214288,0.5,0.08611111111111108,Interior peak
+Ronnie Bell,1,6.1607142853571455,0.6,0.11173469391659724,Interior peak
+Ronnie Bell,2,6.067857143214288,0.6,0.1719780219934186,Interior peak

@@ -1,0 +1,13 @@
+model,players,rmse,mae,analysis
+Added interval,53,0.3147483202443242,0.2668201921190603,Primary: at least 10 NFL routes
+Baseline,53,0.30599886978384555,0.2592887900754614,Primary: at least 10 NFL routes
+Year reference,53,0.3018159815601852,0.2577215109801741,Primary: at least 10 NFL routes
+Added interval,45,0.3106813489499909,0.2604473040825939,At least 20 NFL routes
+Baseline,45,0.3010665456689276,0.25352206566315766,At least 20 NFL routes
+Year reference,45,0.29318364329077967,0.2512269638494123,At least 20 NFL routes
+Added interval,43,0.3148652840609412,0.2620232611566295,Two measured Combine intervals
+Baseline,43,0.30763220211471587,0.25701916286723014,Two measured Combine intervals
+Year reference,43,0.2992054384047955,0.24896535447311938,Two measured Combine intervals
+Added interval,53,0.2753838486078261,0.2353466993895462,Route-context sensitivity
+Baseline,53,0.26935523059341765,0.22976755343569424,Route-context sensitivity
+Year reference,53,0.3018159815601852,0.2577215109801741,Route-context sensitivity

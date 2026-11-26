@@ -1,0 +1,167 @@
+---
+title: "Same Forty, Different Gears"
+subtitle: "How NFL Prospects Reach Similar 40 Times Through Different Acceleration Profiles"
+author: "Hunter Clark"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(ggplot2)
+
+ROOT <- normalizePath(getwd())
+
+while (!(dir.exists(file.path(ROOT, "analysis_r")) &&
+         dir.exists(file.path(ROOT, "data")))) {
+
+  parent <- dirname(ROOT)
+
+  if (parent == ROOT) {
+    stop("Open the project folder first.")
+  }
+
+  ROOT <- parent
+}
+
+knitr::opts_knit$set(root.dir = ROOT)
+
+knitr::opts_chunk$set(
+  echo = FALSE,
+  message = FALSE,
+  warning = FALSE,
+  error = FALSE
+)
+
+OUTPUT <- file.path(
+  ROOT,
+  "outputs",
+  "r_restart",
+  "06_report"
+)
+
+FIGURES <- file.path(
+  OUTPUT,
+  "figures"
+)
+
+dir.create(
+  FIGURES,
+  recursive = TRUE,
+  showWarnings = FALSE
+)
+
+handoff_paths <- file.path(
+  ROOT,
+  "outputs",
+  "r_restart",
+  c(
+    "03_consistency/profile_handoff.rds",
+    "04_comparisons/comparison_handoff.rds",
+    "05_nfl_translation/nfl_translation_handoff.rds"
+  )
+)
+
+if (!all(file.exists(handoff_paths))) {
+  stop("Complete and save Rmds 03, 04, and 05 first.")
+}
+
+profiles <- readRDS(handoff_paths[1])
+comparison <- readRDS(handoff_paths[2])
+nfl <- readRDS(handoff_paths[3])
+
+primary <- nfl$tables$primary_comparison
+uncertainty <- nfl$tables$primary_conditional_interval
+context <- nfl$tables$context_comparison
+metrics <- nfl$tables$model_metrics
+sensitivities <- nfl$tables$sample_sensitivities
+
+agreement <- profiles$consistency_tables$peak_agreement_by_position
+
+selected <- comparison$selected_players
+selected_peaks <- comparison$crossing_aligned_peaks
+
+if (primary$rmse_gain >= 0 ||
+    context$rmse_gain >= 0 ||
+    any(sensitivities$rmse_gain >= 0) ||
+    uncertainty$conditional_gain_p975 >= 0) {
+  stop("Result directions changed. Revise the narrative before rendering.")
+}
+
+fmt <- function(x, digits = 3) {
+  formatC(
+    x,
+    format = "f",
+    digits = digits
+  )
+}
+
+observed_range <- function(x, digits = 3) {
+
+  x <- x[is.finite(x)]
+
+  if (length(x) == 0L) {
+    return("Unavailable")
+  }
+
+  paste(
+    fmt(min(x), digits),
+    fmt(max(x), digits),
+    sep = " to "
+  )
+}
+
+reference_rmse <- metrics |>
+  filter(
+    analysis == "Primary: at least 10 NFL routes",
+    model == "Year reference"
+  ) |>
+  pull(rmse)
+
+interior_times <- selected_peaks$peak_time_from_speed_crossing_s[
+  !selected_peaks$peak_at_search_boundary
+]
+
+source_figures <- file.path(
+  ROOT,
+  "outputs",
+  "r_restart",
+  "04_comparisons",
+  "figures",
+  c(
+    "full_recorded_speed.png",
+    "crossing_aligned_speed.png"
+  )
+)
+
+if (!all(file.exists(source_figures))) {
+  stop("Save the comparison figures in Rmd 04 first.")
+}
+
+copied_figures <- file.copy(
+  from = source_figures,
+  to = file.path(
+    FIGURES,
+    c(
+      "01_speed.png",
+      "02_aligned_speed.png"
+    )
+  ),
+  overwrite = TRUE
+)
+
+if (!all(copied_figures)) {
+  stop("Could not copy the comparison figures.")
+}
+```
+
+## What does the stopwatch leave out?
+
+`r paste(selected$display_name, collapse = ", ")` share a published `r fmt(comparison$settings$official_forty_s, 2)`-second 40. Does that mean they build speed in the same way?
+
+This project examines recorded speed development, observed acceleration peaks, and repeated-attempt agreement within Combine position groups. A separate receiver analysis asks whether a speed-building interval improves prediction of early NFL route movement beyond traditional testing results.
+
+The distinction matters: identifying different recorded profiles is a descriptive finding. Establishing useful NFL prediction requires an additional test.
+
+## Data and measurement
+
+The Combine cohort contains `r nrow(profiles$player_roster)` players and `r nrow(profiles$named_peaks)` recordings from 2023–2025, covering DB, DL, OL, TE,

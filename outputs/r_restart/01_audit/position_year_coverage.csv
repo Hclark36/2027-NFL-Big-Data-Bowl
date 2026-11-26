@@ -1,0 +1,16 @@
+combine_position,draft_year,players,total_recordings,players_with_one_recording,players_with_two_recordings
+DB,2023,33,63,3,30
+DB,2024,40,74,6,34
+DB,2025,29,58,0,29
+DL,2023,33,62,4,29
+DL,2024,31,57,5,26
+DL,2025,29,58,0,29
+OL,2023,30,56,4,26
+OL,2024,37,70,4,33
+OL,2025,28,53,3,25
+TE,2023,9,18,0,9
+TE,2024,11,20,2,9
+TE,2025,14,28,0,14
+WR,2023,33,63,3,30
+WR,2024,28,48,8,20
+WR,2025,33,65,1,32

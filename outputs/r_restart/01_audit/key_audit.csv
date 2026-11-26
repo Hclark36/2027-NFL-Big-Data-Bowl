@@ -1,0 +1,3 @@
+table,rows,candidate_key,rows_with_missing_key,rows_in_duplicate_keys,distinct_complete_keys
+players,510,nfl_id,0,0,510
+combine_results,510,"draft_year, nfl_id",0,0,510

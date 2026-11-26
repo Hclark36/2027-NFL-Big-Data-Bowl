@@ -1,0 +1,9 @@
+display_name,attempt,official_forty_s,ten_yd_split,peak_acceleration_raw_per_s,peak_time_from_recording_start_s,peak_at_search_boundary,interval_s,status
+Cedric Tillman,2,4.54,1.53,6.52380952357143,0.4,FALSE,0.6888255121301448,Measured
+Cedric Tillman,4,4.54,1.53,6.724999999642856,0.3,TRUE,0.668202254462723,Measured
+Elijah Higgins,1,4.54,1.56,6.0154761910714285,0.6,FALSE,0.70087617054445,Measured
+Elijah Higgins,3,4.54,1.56,6.944047618928569,0.3,TRUE,0.6971438248165993,Measured
+Joseph Ngata,1,4.54,1.59,6.384523809642861,0.5,FALSE,0.7299280880705701,Measured
+Joseph Ngata,2,4.54,1.59,6.803571428214288,0.5,FALSE,0.6378352490778174,Measured
+Ronnie Bell,1,4.54,1.52,6.1607142853571455,0.6,FALSE,0.7159013606665972,Measured
+Ronnie Bell,2,4.54,1.52,6.067857143214288,0.6,FALSE,0.72073835257398,Measured
